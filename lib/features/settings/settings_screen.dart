@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/app_snackbar.dart';
 import '../../core/note_colors.dart';
 import '../../data/update_service.dart';
 import '../../providers/providers.dart';
@@ -73,7 +74,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   void _snack(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    showAppSnackBar(context, message);
   }
 
   Future<void> _checkForUpdates() async {
@@ -177,11 +178,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       if (ok != true) return;
     }
     await ref.read(noteRepositoryProvider).emptyTrash();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Trash emptied')),
-      );
-    }
+    _snack('Trash emptied');
   }
 
   @override

@@ -133,8 +133,10 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     final repo = ref.read(noteRepositoryProvider);
     if (!widget.isNew) {
       await repo.moveToTrash(_note.id);
+      messenger.clearSnackBars();
       messenger.showSnackBar(SnackBar(
         content: const Text('Moved to Trash'),
+        duration: const Duration(seconds: 3),
         action: SnackBarAction(
             label: 'Undo', onPressed: () => repo.restore(_note.id)),
       ));
@@ -152,8 +154,10 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     await _flush();
     if (!_shouldDiscard) {
       await repo.archive(_note.id);
+      messenger.clearSnackBars();
       messenger.showSnackBar(SnackBar(
         content: const Text('Archived'),
+        duration: const Duration(seconds: 3),
         action: SnackBarAction(
             label: 'Undo', onPressed: () => repo.unarchive(_note.id)),
       ));

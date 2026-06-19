@@ -204,7 +204,7 @@ class DriveAuth {
   }
 
   Future<_TokenSet> _postToken(Map<String, String> body) async {
-    final res = await http.post(Uri.parse(_tokenEndpoint), body: body);
+    final res = await _postWithRetry(body);
     if (res.statusCode != 200) {
       // Surface Google's error/description so credential problems are clear.
       String detail = '';
@@ -230,6 +230,36 @@ class DriveAuth {
       DateTime.now().add(Duration(seconds: expiresIn)),
       json['refresh_token'] as String?,
     );
+  }
+
+  /// POSTs to the token endpoint, retrying on transient network failures.
+  ///
+  /// On Android the OS browser handles consent while PaperNotes is in the
+  /// background, and Android restricts background network — so the token
+  /// exchange can fail DNS resolution until the user returns to the app. We
+  /// retry for ~36s so the request succeeds once the app is foregrounded again.
+  Future<http.Response> _postWithRetry(Map<String, String> body) async {
+    const maxAttempts = 12;
+    const delay = Duration(seconds: 3);
+    Object? lastError;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await http
+            .post(Uri.parse(_tokenEndpoint), body: body)
+            .timeout(const Duration(seconds: 20));
+      } on SocketException catch (e) {
+        lastError = e;
+      } on http.ClientException catch (e) {
+        lastError = e;
+      } on TimeoutException catch (e) {
+        lastError = e;
+      }
+      if (attempt < maxAttempts) await Future.delayed(delay);
+    }
+    throw DriveAuthException(
+        'Couldn\'t reach Google to finish signing in. On Android, return to '
+        'PaperNotes after approving in the browser, then it will retry. '
+        'Check your connection if it persists. ($lastError)');
   }
 
   static String _randomString(int length) {

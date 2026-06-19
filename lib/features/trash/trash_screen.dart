@@ -33,7 +33,9 @@ class TrashScreen extends ConsumerWidget {
       if (ok != true) return;
     }
     await repo.emptyTrash();
-    messenger.showSnackBar(const SnackBar(content: Text('Trash emptied')));
+    messenger.clearSnackBars();
+    messenger.showSnackBar(const SnackBar(
+        content: Text('Trash emptied'), duration: Duration(seconds: 3)));
   }
 
   @override

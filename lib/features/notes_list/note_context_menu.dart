@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/app_snackbar.dart';
 import '../../data/models/note.dart';
 import '../../providers/providers.dart';
 import '../editor/color_picker.dart';
@@ -120,7 +121,6 @@ Future<void> showNoteActionsSheet(
 Future<void> _run(BuildContext context, WidgetRef ref, _NoteAction action,
     Note note) async {
   final repo = ref.read(noteRepositoryProvider);
-  final messenger = ScaffoldMessenger.of(context);
 
   switch (action) {
     case _NoteAction.pin:
@@ -137,20 +137,20 @@ Future<void> _run(BuildContext context, WidgetRef ref, _NoteAction action,
       }
     case _NoteAction.archive:
       await repo.archive(note.id);
-      messenger.showSnackBar(SnackBar(
-        content: const Text('Archived'),
-        action: SnackBarAction(
-            label: 'Undo', onPressed: () => repo.unarchive(note.id)),
-      ));
+      if (context.mounted) {
+        showAppSnackBar(context, 'Archived',
+            action: SnackBarAction(
+                label: 'Undo', onPressed: () => repo.unarchive(note.id)));
+      }
     case _NoteAction.unarchive:
       await repo.unarchive(note.id);
     case _NoteAction.trash:
       await repo.moveToTrash(note.id);
-      messenger.showSnackBar(SnackBar(
-        content: const Text('Moved to Trash'),
-        action: SnackBarAction(
-            label: 'Undo', onPressed: () => repo.restore(note.id)),
-      ));
+      if (context.mounted) {
+        showAppSnackBar(context, 'Moved to Trash',
+            action: SnackBarAction(
+                label: 'Undo', onPressed: () => repo.restore(note.id)));
+      }
     case _NoteAction.restore:
       await repo.restore(note.id);
     case _NoteAction.deleteForever:
