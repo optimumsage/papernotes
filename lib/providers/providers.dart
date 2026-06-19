@@ -1,0 +1,244 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../core/note_sort.dart';
+import '../data/local/database.dart';
+import '../data/models/note.dart';
+import '../data/repositories/note_repository.dart';
+import '../data/settings_service.dart';
+import '../data/sync/drive_auth.dart';
+import '../data/sync/drive_client.dart';
+import '../data/sync/sync_engine.dart';
+import '../data/update_service.dart';
+
+/// Overridden in main() with the real instances created during bootstrap.
+final prefsProvider = Provider<SharedPreferences>((_) {
+  throw UnimplementedError('prefsProvider must be overridden');
+});
+final databaseProvider = Provider<AppDatabase>((_) {
+  throw UnimplementedError('databaseProvider must be overridden');
+});
+final initialSettingsProvider = Provider<AppSettings>((_) {
+  throw UnimplementedError('initialSettingsProvider must be overridden');
+});
+
+final settingsServiceProvider = Provider<SettingsService>(
+  (ref) => SettingsService(ref.watch(prefsProvider)),
+);
+
+final noteRepositoryProvider = Provider<NoteRepository>(
+  (ref) => NoteRepository(ref.watch(databaseProvider)),
+);
+
+final driveAuthProvider = Provider<DriveAuth>(
+  (ref) => DriveAuth(ref.watch(settingsServiceProvider)),
+);
+
+final driveClientProvider = Provider<DriveClient>((ref) {
+  final client = DriveClient(ref.watch(driveAuthProvider));
+  ref.onDispose(client.close);
+  return client;
+});
+
+final syncEngineProvider = Provider<SyncEngine>(
+  (ref) => SyncEngine(
+    ref.watch(databaseProvider),
+    ref.watch(driveClientProvider),
+    ref.watch(settingsServiceProvider),
+  ),
+);
+
+final updateServiceProvider = Provider<UpdateService>((_) => UpdateService());
+
+// ---- Notes lists (active / archive / trash) + search ----
+
+final activeNotesProvider = StreamProvider<List<Note>>(
+  (ref) => ref.watch(noteRepositoryProvider).watchActive(),
+);
+final archivedNotesProvider = StreamProvider<List<Note>>(
+  (ref) => ref.watch(noteRepositoryProvider).watchArchived(),
+);
+final trashedNotesProvider = StreamProvider<List<Note>>(
+  (ref) => ref.watch(noteRepositoryProvider).watchTrashed(),
+);
+
+/// Live search text. A small Notifier (Riverpod 3 dropped StateProvider from
+/// the main export).
+final searchQueryProvider =
+    NotifierProvider<SearchQuery, String>(SearchQuery.new);
+
+class SearchQuery extends Notifier<String> {
+  @override
+  String build() => '';
+  void set(String value) => state = value;
+}
+
+/// Active notes filtered by the live search query and sorted per the user's
+/// chosen SortMode (pinned always first).
+final filteredNotesProvider = Provider<List<Note>>((ref) {
+  final notes = ref.watch(activeNotesProvider).value ?? const [];
+  final query = ref.watch(searchQueryProvider);
+  final sortMode = ref.watch(
+      settingsControllerProvider.select((s) => s.sortMode));
+  return sortNotes(searchNotes(notes, query), sortMode);
+});
+
+/// Archived notes, searched + sorted the same way.
+final filteredArchivedProvider = Provider<List<Note>>((ref) {
+  final notes = ref.watch(archivedNotesProvider).value ?? const [];
+  final query = ref.watch(searchQueryProvider);
+  final sortMode = ref.watch(
+      settingsControllerProvider.select((s) => s.sortMode));
+  return sortNotes(searchNotes(notes, query), sortMode);
+});
+
+/// Trashed notes, searched + sorted the same way.
+final filteredTrashedProvider = Provider<List<Note>>((ref) {
+  final notes = ref.watch(trashedNotesProvider).value ?? const [];
+  final query = ref.watch(searchQueryProvider);
+  final sortMode = ref.watch(
+      settingsControllerProvider.select((s) => s.sortMode));
+  return sortNotes(searchNotes(notes, query), sortMode);
+});
+
+// ---- Settings ----
+
+final settingsControllerProvider =
+    NotifierProvider<SettingsController, AppSettings>(SettingsController.new);
+
+class SettingsController extends Notifier<AppSettings> {
+  SettingsService get _service => ref.read(settingsServiceProvider);
+
+  @override
+  AppSettings build() => ref.read(initialSettingsProvider);
+
+  Future<void> reload() async => state = await _service.load();
+
+  Future<void> setThemeMode(ThemeMode mode) async {
+    await _service.setThemeMode(mode);
+    state = state.copyWith(themeMode: mode);
+  }
+
+  Future<void> setSyncEnabled(bool value) async {
+    await _service.setSyncEnabled(value);
+    state = state.copyWith(syncEnabled: value);
+  }
+
+  Future<void> setFontScale(double value) async {
+    await _service.setFontScale(value);
+    state = state.copyWith(fontScale: value);
+  }
+
+  Future<void> setSortMode(SortMode mode) async {
+    await _service.setSortMode(mode);
+    state = state.copyWith(sortMode: mode);
+  }
+
+  Future<void> setViewStyle(ViewStyle style) async {
+    await _service.setViewStyle(style);
+    state = state.copyWith(viewStyle: style);
+  }
+
+  Future<void> setDefaultColor(int index) async {
+    await _service.setDefaultColor(index);
+    state = state.copyWith(defaultColor: index);
+  }
+
+  Future<void> setSyncOnLaunch(bool value) async {
+    await _service.setSyncOnLaunch(value);
+    state = state.copyWith(syncOnLaunch: value);
+  }
+
+  Future<void> setAutoSyncEnabled(bool value) async {
+    await _service.setAutoSyncEnabled(value);
+    state = state.copyWith(autoSyncEnabled: value);
+  }
+
+  Future<void> setAutoSyncMinutes(int value) async {
+    await _service.setAutoSyncMinutes(value);
+    state = state.copyWith(autoSyncMinutes: value);
+  }
+
+  Future<void> setConfirmDelete(bool value) async {
+    await _service.setConfirmDelete(value);
+    state = state.copyWith(confirmDelete: value);
+  }
+
+  Future<void> setTrashRetentionDays(int value) async {
+    await _service.setTrashRetentionDays(value);
+    state = state.copyWith(trashRetentionDays: value);
+  }
+
+  Future<void> setCredentials(String clientId, String clientSecret) async {
+    await _service.setClientId(clientId.trim());
+    if (clientSecret.isNotEmpty) {
+      await _service.setClientSecret(clientSecret.trim());
+    }
+    await reload();
+  }
+
+  Future<void> markSyncedNow() async {
+    await reload();
+  }
+}
+
+// ---- Sync controller ----
+
+enum SyncPhase { idle, running, success, error }
+
+class SyncStatus {
+  final SyncPhase phase;
+  final String? message;
+  const SyncStatus(this.phase, [this.message]);
+}
+
+final syncControllerProvider =
+    NotifierProvider<SyncController, SyncStatus>(SyncController.new);
+
+class SyncController extends Notifier<SyncStatus> {
+  @override
+  SyncStatus build() => const SyncStatus(SyncPhase.idle);
+
+  /// Sign in interactively, then enable sync and run the first sync.
+  Future<void> signInAndEnable() async {
+    final auth = ref.read(driveAuthProvider);
+    try {
+      state = const SyncStatus(SyncPhase.running, 'Signing in…');
+      await auth.signIn();
+      await ref.read(settingsControllerProvider.notifier).setSyncEnabled(true);
+      await ref.read(settingsControllerProvider.notifier).reload();
+      await syncNow();
+    } on DriveAuthException catch (e) {
+      state = SyncStatus(SyncPhase.error, e.message);
+    } catch (e) {
+      state = SyncStatus(SyncPhase.error, e.toString());
+    }
+  }
+
+  Future<void> signOut() async {
+    await ref.read(driveAuthProvider).signOut();
+    await ref.read(settingsControllerProvider.notifier).setSyncEnabled(false);
+    await ref.read(settingsControllerProvider.notifier).reload();
+    state = const SyncStatus(SyncPhase.idle);
+  }
+
+  /// Run one full two-way sync cycle. Safe to call from UI buttons and timers.
+  Future<void> syncNow() async {
+    final settings = ref.read(settingsControllerProvider);
+    if (!settings.syncEnabled || !settings.signedIn) return;
+    try {
+      state = const SyncStatus(SyncPhase.running, 'Syncing…');
+      final result = await ref.read(syncEngineProvider).sync();
+      await ref.read(settingsControllerProvider.notifier).markSyncedNow();
+      state = SyncStatus(
+        SyncPhase.success,
+        '↓${result.pulled} ↑${result.pushed}',
+      );
+    } on DriveAuthException catch (e) {
+      state = SyncStatus(SyncPhase.error, e.message);
+    } catch (e) {
+      state = SyncStatus(SyncPhase.error, 'Sync failed: $e');
+    }
+  }
+}

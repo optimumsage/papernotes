@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Brand background -->
+  <rect width="1024" height="1024" rx="230" fill="#5B7CFA"/>
+  <!-- Note sheet with a folded top-right corner -->
+  <g>
+    <path d="M260 250 Q260 210 300 210 L624 210 L764 350 L764 774 Q764 814 724 814 L300 814 Q260 814 260 774 Z"
+          fill="#FFFFFF"/>
+    <!-- folded-corner flap -->
+    <path d="M624 210 L764 350 L624 350 Z" fill="#C7D4FF"/>
+    <!-- checkmark -->
+    <path d="M330 452 L378 500 L476 396"
+          fill="none" stroke="#5B7CFA" stroke-width="40"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- text lines -->
+    <rect x="330" y="588" width="364" height="30" rx="15" fill="#9DB2FF"/>
+    <rect x="330" y="660" width="300" height="30" rx="15" fill="#9DB2FF"/>
+  </g>
+</svg>
