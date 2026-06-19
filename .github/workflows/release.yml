@@ -110,6 +110,9 @@ jobs:
           channel: stable
           cache: true
       - run: flutter config --enable-linux-desktop
+      # The linux/ runner folder isn't committed (it can't be scaffolded on
+      # macOS, the dev machine), so generate it here before building.
+      - run: flutter create --platforms=linux .
       - run: flutter pub get
       - name: Build Linux
         run: flutter build linux --release
