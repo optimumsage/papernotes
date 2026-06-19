@@ -4,16 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/note_sort.dart';
 import '../../providers/providers.dart';
 import '../common/app_drawer.dart';
+import '../common/desktop_shell.dart';
 
-/// Below this width the navigation is a modal drawer (mobile); at or above it
-/// the drawer becomes a permanent side panel (desktop) so folder drop-targets
-/// stay visible while dragging note cards.
-const double _wideBreakpoint = 900;
-
-/// Common chrome for the Notes / Archive / Trash screens: navigation (modal
-/// drawer or permanent side panel), a collapsible search field, and a compact
-/// actions cluster. The body (which watches the relevant notes provider) is
-/// supplied by each screen so search/sort changes flow through automatically.
+/// Common chrome for the Notes / Archive / Trash screens: a modal navigation
+/// drawer (mobile only — the permanent desktop side panel lives in
+/// [DesktopShell]), a collapsible search field, and a compact actions cluster.
+/// The body (which watches the relevant notes provider) is supplied by each
+/// screen so search/sort changes flow through automatically.
 class NotesScaffold extends ConsumerStatefulWidget {
   const NotesScaffold({
     super.key,
@@ -61,13 +58,15 @@ class _NotesScaffoldState extends ConsumerState<NotesScaffold> {
         ref.watch(settingsControllerProvider.select((s) => s.sortMode));
     final viewStyle =
         ref.watch(settingsControllerProvider.select((s) => s.viewStyle));
-    final isWide = MediaQuery.sizeOf(context).width >= _wideBreakpoint;
+    final isWide = MediaQuery.sizeOf(context).width >= kWideBreakpoint;
 
-    final scaffold = Scaffold(
-      // Permanent side panel on wide layouts hosts navigation instead.
+    return Scaffold(
+      // The permanent side panel (DesktopShell) hosts navigation on wide
+      // layouts; only narrow layouts get the modal drawer.
       drawer: isWide ? null : AppDrawer(current: widget.route),
       appBar: AppBar(
-        titleSpacing: 0,
+        // No leading hamburger on wide, so give the title room off the divider.
+        titleSpacing: isWide ? 20 : 0,
         title: _searching
             ? TextField(
                 controller: _searchController,
@@ -134,22 +133,6 @@ class _NotesScaffoldState extends ConsumerState<NotesScaffold> {
       ),
       body: widget.body,
       floatingActionButton: widget.floatingActionButton,
-    );
-
-    if (!isWide) return scaffold;
-
-    return Row(
-      children: [
-        SizedBox(
-          width: 280,
-          child: Material(
-            color: Theme.of(context).colorScheme.surface,
-            child: AppDrawerContent(current: widget.route),
-          ),
-        ),
-        const VerticalDivider(width: 1),
-        Expanded(child: scaffold),
-      ],
     );
   }
 }
