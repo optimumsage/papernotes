@@ -4,7 +4,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/note_sort.dart';
 import '../data/local/database.dart';
+import '../data/models/folder.dart';
 import '../data/models/note.dart';
+import '../data/repositories/folder_repository.dart';
 import '../data/repositories/note_repository.dart';
 import '../data/settings_service.dart';
 import '../data/sync/drive_auth.dart';
@@ -29,6 +31,10 @@ final settingsServiceProvider = Provider<SettingsService>(
 
 final noteRepositoryProvider = Provider<NoteRepository>(
   (ref) => NoteRepository(ref.watch(databaseProvider)),
+);
+
+final folderRepositoryProvider = Provider<FolderRepository>(
+  (ref) => FolderRepository(ref.watch(databaseProvider)),
 );
 
 final driveAuthProvider = Provider<DriveAuth>(
@@ -74,10 +80,48 @@ class SearchQuery extends Notifier<String> {
   void set(String value) => state = value;
 }
 
-/// Active notes filtered by the live search query and sorted per the user's
-/// chosen SortMode (pinned always first).
+// ---- Folders ----
+
+/// Live, non-deleted folders (sorted by name in the db query).
+final foldersProvider = StreamProvider<List<Folder>>(
+  (ref) => ref.watch(folderRepositoryProvider).watchFolders(),
+);
+
+/// The folder currently filtering the Notes screen, or null for "all notes".
+final selectedFolderProvider =
+    NotifierProvider<SelectedFolder, String?>(SelectedFolder.new);
+
+class SelectedFolder extends Notifier<String?> {
+  @override
+  String? build() => null;
+  void set(String? id) => state = id;
+}
+
+/// The currently-selected folder resolved to a [Folder], or null when no
+/// folder filter is active (or the folder was removed).
+final selectedFolderObjectProvider = Provider<Folder?>((ref) {
+  final id = ref.watch(selectedFolderProvider);
+  if (id == null) return null;
+  final folders = ref.watch(foldersProvider).value ?? const [];
+  for (final f in folders) {
+    if (f.id == id) return f;
+  }
+  return null;
+});
+
+/// Active notes filtered by the selected folder + live search query, sorted
+/// per the user's chosen SortMode (pinned always first).
 final filteredNotesProvider = Provider<List<Note>>((ref) {
-  final notes = ref.watch(activeNotesProvider).value ?? const [];
+  var notes = ref.watch(activeNotesProvider).value ?? const [];
+  final folderId = ref.watch(selectedFolderProvider);
+  if (folderId != null) {
+    // Only filter while the folder still exists (it may have been deleted on
+    // another device and pulled in); otherwise fall back to showing all notes.
+    final folders = ref.watch(foldersProvider).value ?? const [];
+    if (folders.any((f) => f.id == folderId)) {
+      notes = notes.where((n) => n.folderId == folderId).toList();
+    }
+  }
   final query = ref.watch(searchQueryProvider);
   final sortMode = ref.watch(
       settingsControllerProvider.select((s) => s.sortMode));

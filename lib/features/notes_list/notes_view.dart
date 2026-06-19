@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
@@ -33,11 +34,19 @@ class NotesView extends ConsumerWidget {
     }
   }
 
+  /// On desktop, dragging a card onto a folder in the side panel files it.
+  /// Touch platforms keep scroll gestures and use the "Move to folder" menu
+  /// action instead, so Draggable is desktop-only.
+  static bool get _desktop =>
+      defaultTargetPlatform == TargetPlatform.linux ||
+      defaultTargetPlatform == TargetPlatform.macOS ||
+      defaultTargetPlatform == TargetPlatform.windows;
+
   Widget _wrap(BuildContext context, WidgetRef ref, Note note) {
     // InkWell inside NoteCard claims normal taps; secondary-tap and long-press
     // fall through to this GestureDetector and open the context menu at the
     // pointer position.
-    return GestureDetector(
+    final card = GestureDetector(
       onSecondaryTapDown: (d) =>
           showNoteMenu(context, ref, d.globalPosition, note, mode),
       onLongPressStart: (d) =>
@@ -52,6 +61,16 @@ class NotesView extends ConsumerWidget {
           ),
         ),
       ),
+    );
+
+    if (!_desktop || mode != NotesViewMode.active) return card;
+
+    return Draggable<Note>(
+      data: note,
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      feedback: _DragFeedback(note: note),
+      childWhenDragging: Opacity(opacity: 0.4, child: card),
+      child: card,
     );
   }
 
@@ -78,6 +97,52 @@ class NotesView extends ConsumerWidget {
       padding: const EdgeInsets.fromLTRB(12, 4, 12, 96),
       itemCount: notes.length,
       itemBuilder: (context, i) => _wrap(context, ref, notes[i]),
+    );
+  }
+}
+
+/// Compact chip shown under the pointer while dragging a note to a folder.
+class _DragFeedback extends StatelessWidget {
+  const _DragFeedback({required this.note});
+  final Note note;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final label = note.hasTitle
+        ? note.title!.trim()
+        : (note.isChecklist ? 'Checklist' : (note.body ?? 'Note').trim());
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 220),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.primary,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: const [
+            BoxShadow(color: Colors.black26, blurRadius: 8, offset: Offset(0, 2)),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.drive_file_move_rounded,
+                size: 18, color: theme.colorScheme.onPrimary),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                label.isEmpty ? 'Note' : label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    color: theme.colorScheme.onPrimary,
+                    fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

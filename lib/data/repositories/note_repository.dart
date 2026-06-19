@@ -24,13 +24,15 @@ class NoteRepository {
   /// Create a fresh note/checklist in memory. Not persisted until [save] is
   /// called — lets the editor discard empty notes without ever writing a row.
   /// An [id] may be supplied so the route and the row share the same UUID;
-  /// [color] seeds the user's default note color.
-  Note newDraft(NoteType type, {String? id, int color = 0}) {
+  /// [color] seeds the user's default note color. [folderId] files the new
+  /// note into a folder (e.g. the one currently being viewed).
+  Note newDraft(NoteType type, {String? id, int color = 0, String? folderId}) {
     final now = _now;
     return Note(
       id: id ?? _uuid.v4(),
       type: type,
       color: color,
+      folderId: folderId,
       items: type == NoteType.checklist
           ? [ChecklistItem(id: _uuid.v4())]
           : const [],
@@ -113,6 +115,20 @@ class NoteRepository {
     if (note == null) return;
     await _db.upsertNote(
       note.copyWith(color: color, updatedAt: _now),
+      dirty: true,
+    );
+  }
+
+  /// Move a note into [folderId] (null unfiles it).
+  Future<void> setFolder(String id, String? folderId) async {
+    final note = await _db.getNote(id);
+    if (note == null) return;
+    await _db.upsertNote(
+      note.copyWith(
+        folderId: folderId,
+        clearFolderId: folderId == null,
+        updatedAt: _now,
+      ),
       dirty: true,
     );
   }

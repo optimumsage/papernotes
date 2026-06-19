@@ -5,6 +5,7 @@ import 'package:drift/native.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../models/folder.dart';
 import '../models/note.dart';
 
 part 'database.g.dart';
@@ -21,6 +22,7 @@ class Notes extends Table {
   TextColumn get items => text().nullable()(); // JSON list
   IntColumn get color => integer().withDefault(const Constant(0))();
   BoolColumn get pinned => boolean().withDefault(const Constant(false))();
+  TextColumn get folderId => text().nullable()(); // owning folder, or null
   TextColumn get status =>
       text().withDefault(const Constant('active'))(); // active|archived|trashed
   IntColumn get trashedAt => integer().nullable()();
@@ -38,13 +40,33 @@ class Notes extends Table {
   Set<Column> get primaryKey => {id};
 }
 
-@DriftDatabase(tables: [Notes])
+/// Drift table backing folders. Flat (no nesting). Carries the same sync
+/// bookkeeping as notes so folders round-trip through Drive identically.
+@DataClassName('FolderRow')
+class Folders extends Table {
+  TextColumn get id => text()();
+  TextColumn get name => text()();
+  IntColumn get createdAt => integer()();
+  IntColumn get updatedAt => integer()();
+  BoolColumn get deleted => boolean().withDefault(const Constant(false))();
+  IntColumn get deletedAt => integer().nullable()();
+
+  // Sync metadata
+  TextColumn get driveFileId => text().nullable()();
+  TextColumn get remoteModifiedTime => text().nullable()();
+  BoolColumn get dirty => boolean().withDefault(const Constant(true))();
+
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
+@DriftDatabase(tables: [Notes, Folders])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_open());
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -52,6 +74,10 @@ class AppDatabase extends _$AppDatabase {
           if (from < 2) {
             await m.addColumn(notes, notes.status);
             await m.addColumn(notes, notes.trashedAt);
+          }
+          if (from < 3) {
+            await m.addColumn(notes, notes.folderId);
+            await m.createTable(folders);
           }
         },
       );
@@ -158,7 +184,111 @@ class AppDatabase extends _$AppDatabase {
     return rows.map(_toModel).toList();
   }
 
+  // ---- Folders ----
+
+  /// Live, non-deleted folders ordered by name (case-insensitive).
+  Stream<List<Folder>> watchFolders() {
+    final query = select(folders)
+      ..where((t) => t.deleted.equals(false))
+      ..orderBy([(t) => OrderingTerm(expression: t.name.lower())]);
+    return query.watch().map((rows) => rows.map(_toFolderModel).toList());
+  }
+
+  Future<Folder?> getFolder(String id) async {
+    final row =
+        await (select(folders)..where((t) => t.id.equals(id))).getSingleOrNull();
+    return row == null ? null : _toFolderModel(row);
+  }
+
+  Future<void> upsertFolder(Folder folder, {required bool dirty}) {
+    return into(folders)
+        .insertOnConflictUpdate(_toFolderCompanion(folder, dirty: dirty));
+  }
+
+  Future<void> hardDeleteFolder(String id) {
+    return (delete(folders)..where((t) => t.id.equals(id))).go();
+  }
+
+  /// Notes currently filed under [folderId] (tombstones excluded). Used when a
+  /// folder is deleted so its notes can be unfiled.
+  Future<List<Note>> notesInFolder(String folderId) async {
+    final rows = await (select(notes)
+          ..where((t) => t.deleted.equals(false) & t.folderId.equals(folderId)))
+        .get();
+    return rows.map(_toModel).toList();
+  }
+
+  Future<FolderRow?> rawFolderRow(String id) {
+    return (select(folders)..where((t) => t.id.equals(id))).getSingleOrNull();
+  }
+
+  Future<List<FolderRow>> allRawFolderRows() => select(folders).get();
+
+  Future<List<Folder>> dirtyFolders() async {
+    final rows =
+        await (select(folders)..where((t) => t.dirty.equals(true))).get();
+    return rows.map(_toFolderModel).toList();
+  }
+
+  Future<void> setFolderSyncMeta(
+    String id, {
+    required String driveFileId,
+    required String? remoteModifiedTime,
+    required bool dirty,
+  }) {
+    return (update(folders)..where((t) => t.id.equals(id))).write(
+      FoldersCompanion(
+        driveFileId: Value(driveFileId),
+        remoteModifiedTime: Value(remoteModifiedTime),
+        dirty: Value(dirty),
+      ),
+    );
+  }
+
+  Future<void> applyRemoteFolder(
+    Folder folder, {
+    required String driveFileId,
+    required String? remoteModifiedTime,
+  }) {
+    return into(folders).insertOnConflictUpdate(
+      _toFolderCompanion(folder, dirty: false).copyWith(
+        driveFileId: Value(driveFileId),
+        remoteModifiedTime: Value(remoteModifiedTime),
+      ),
+    );
+  }
+
+  Future<List<Folder>> expiredFolderTombstones(int cutoffEpochMs) async {
+    final rows = await (select(folders)
+          ..where((t) =>
+              t.deleted.equals(true) &
+              t.deletedAt.isSmallerThanValue(cutoffEpochMs)))
+        .get();
+    return rows.map(_toFolderModel).toList();
+  }
+
   // ---- Mapping ----
+
+  Folder _toFolderModel(FolderRow row) => Folder(
+        id: row.id,
+        name: row.name,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        deleted: row.deleted,
+        deletedAt: row.deletedAt,
+      );
+
+  FoldersCompanion _toFolderCompanion(Folder folder, {required bool dirty}) {
+    return FoldersCompanion(
+      id: Value(folder.id),
+      name: Value(folder.name),
+      createdAt: Value(folder.createdAt),
+      updatedAt: Value(folder.updatedAt),
+      deleted: Value(folder.deleted),
+      deletedAt: Value(folder.deletedAt),
+      dirty: Value(dirty),
+    );
+  }
 
   Note _toModel(NoteRow row) => Note(
         id: row.id,
@@ -168,6 +298,7 @@ class AppDatabase extends _$AppDatabase {
         items: Note.itemsFromColumn(row.items),
         color: row.color,
         pinned: row.pinned,
+        folderId: row.folderId,
         status: NoteStatus.values.firstWhere(
           (s) => s.name == row.status,
           orElse: () => NoteStatus.active,
@@ -188,6 +319,7 @@ class AppDatabase extends _$AppDatabase {
       items: Value(note.isChecklist ? note.itemsToColumn() : null),
       color: Value(note.color),
       pinned: Value(note.pinned),
+      folderId: Value(note.folderId),
       status: Value(note.status.name),
       trashedAt: Value(note.trashedAt),
       createdAt: Value(note.createdAt),

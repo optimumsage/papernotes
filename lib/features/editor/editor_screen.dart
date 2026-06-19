@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants.dart';
+import '../../core/date_format.dart';
 import '../../core/note_colors.dart';
 import '../../data/models/checklist_item.dart';
 import '../../data/models/note.dart';
@@ -17,11 +18,16 @@ class EditorScreen extends ConsumerStatefulWidget {
     required this.noteId,
     required this.isNew,
     required this.type,
+    this.folderId,
   });
 
   final String noteId;
   final bool isNew;
   final NoteType type;
+
+  /// Folder a freshly-created note should be filed into (the folder being
+  /// viewed when "+" was tapped). Null = unfiled.
+  final String? folderId;
 
   @override
   ConsumerState<EditorScreen> createState() => _EditorScreenState();
@@ -46,8 +52,8 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     final repo = ref.read(noteRepositoryProvider);
     if (widget.isNew) {
       final defaultColor = ref.read(settingsControllerProvider).defaultColor;
-      _note =
-          repo.newDraft(widget.type, id: widget.noteId, color: defaultColor);
+      _note = repo.newDraft(widget.type,
+          id: widget.noteId, color: defaultColor, folderId: widget.folderId);
       // Checklist titles are required, so the field is shown from the start.
       _showTitle = widget.type == NoteType.checklist;
     } else {
@@ -293,11 +299,22 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
                   )
                 else
                   _bodyField(theme, onBg),
+                const SizedBox(height: 24),
+                _metadata(theme, onBg),
               ],
             ),
           ),
         ),
       ),
+    );
+  }
+
+  /// Small muted footer showing when the note was created and last edited.
+  Widget _metadata(ThemeData theme, Color onBg) {
+    return Text(
+      'Created ${fullDate(_note.createdAt)} · Edited ${relativeTime(_note.updatedAt)}',
+      style: theme.textTheme.bodySmall
+          ?.copyWith(color: onBg.withValues(alpha: 0.5)),
     );
   }
 

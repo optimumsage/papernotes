@@ -2,13 +2,24 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/app_snackbar.dart';
+import '../../data/models/folder.dart';
 import '../../data/models/note.dart';
 import '../../providers/providers.dart';
 import '../editor/color_picker.dart';
 import 'notes_view.dart';
 
 /// Logical actions a note context menu can offer.
-enum _NoteAction { pin, unpin, color, archive, unarchive, trash, restore, deleteForever }
+enum _NoteAction {
+  pin,
+  unpin,
+  color,
+  moveToFolder,
+  archive,
+  unarchive,
+  trash,
+  restore,
+  deleteForever,
+}
 
 class _ActionSpec {
   final _NoteAction action;
@@ -27,6 +38,8 @@ List<_ActionSpec> _specsFor(Note note, NotesViewMode mode) {
             ? const _ActionSpec(_NoteAction.unpin, Icons.push_pin_outlined, 'Unpin')
             : const _ActionSpec(_NoteAction.pin, Icons.push_pin, 'Pin'),
         const _ActionSpec(_NoteAction.color, Icons.palette_outlined, 'Color…'),
+        const _ActionSpec(_NoteAction.moveToFolder,
+            Icons.drive_file_move_outlined, 'Move to folder…'),
         const _ActionSpec(_NoteAction.archive, Icons.archive_outlined, 'Archive'),
         const _ActionSpec(_NoteAction.trash, Icons.delete_outline, 'Delete',
             destructive: true),
@@ -35,6 +48,8 @@ List<_ActionSpec> _specsFor(Note note, NotesViewMode mode) {
       return [
         const _ActionSpec(_NoteAction.unarchive, Icons.unarchive_outlined, 'Unarchive'),
         const _ActionSpec(_NoteAction.color, Icons.palette_outlined, 'Color…'),
+        const _ActionSpec(_NoteAction.moveToFolder,
+            Icons.drive_file_move_outlined, 'Move to folder…'),
         const _ActionSpec(_NoteAction.trash, Icons.delete_outline, 'Delete',
             destructive: true),
       ];
@@ -135,6 +150,8 @@ Future<void> _run(BuildContext context, WidgetRef ref, _NoteAction action,
           onPick: (c) => repo.setColor(note.id, c),
         );
       }
+    case _NoteAction.moveToFolder:
+      if (context.mounted) await _moveToFolder(context, ref, note);
     case _NoteAction.archive:
       await repo.archive(note.id);
       if (context.mounted) {
@@ -160,6 +177,96 @@ Future<void> _run(BuildContext context, WidgetRef ref, _NoteAction action,
         ok = await _confirmDelete(context) ?? false;
       }
       if (ok) await repo.deletePermanently(note.id);
+  }
+}
+
+/// Bottom-sheet folder picker — the touch-friendly path for filing a note
+/// (desktop also has drag-and-drop). Lets the user pick an existing folder,
+/// create a new one, or remove the note from its current folder.
+Future<void> _moveToFolder(
+    BuildContext context, WidgetRef ref, Note note) async {
+  final folders = ref.read(foldersProvider).value ?? const <Folder>[];
+  final repo = ref.read(noteRepositoryProvider);
+
+  final selected = await showModalBottomSheet<Object>(
+    context: context,
+    builder: (ctx) => SafeArea(
+      child: ListView(
+        shrinkWrap: true,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: Text('Move to folder',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+          ),
+          if (note.folderId != null)
+            ListTile(
+              leading: const Icon(Icons.folder_off_outlined),
+              title: const Text('Remove from folder'),
+              onTap: () => Navigator.pop(ctx, '__none__'),
+            ),
+          for (final f in folders)
+            ListTile(
+              leading: Icon(note.folderId == f.id
+                  ? Icons.folder
+                  : Icons.folder_outlined),
+              title: Text(f.name),
+              trailing: note.folderId == f.id
+                  ? const Icon(Icons.check, size: 20)
+                  : null,
+              onTap: () => Navigator.pop(ctx, f),
+            ),
+          ListTile(
+            leading: const Icon(Icons.create_new_folder_outlined),
+            title: const Text('New folder…'),
+            onTap: () => Navigator.pop(ctx, '__new__'),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  if (selected == null) return;
+  if (selected == '__none__') {
+    await repo.setFolder(note.id, null);
+  } else if (selected == '__new__') {
+    if (!context.mounted) return;
+    final name = await _promptFolderName(context);
+    if (name == null || name.isEmpty) return;
+    final folder = await ref.read(folderRepositoryProvider).createFolder(name);
+    await repo.setFolder(note.id, folder.id);
+    if (context.mounted) showAppSnackBar(context, 'Moved to "$name"');
+  } else if (selected is Folder) {
+    await repo.setFolder(note.id, selected.id);
+    if (context.mounted) showAppSnackBar(context, 'Moved to "${selected.name}"');
+  }
+}
+
+Future<String?> _promptFolderName(BuildContext context) async {
+  final controller = TextEditingController();
+  try {
+    return await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('New folder'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          textCapitalization: TextCapitalization.sentences,
+          decoration: const InputDecoration(hintText: 'Folder name'),
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+              child: const Text('Create')),
+        ],
+      ),
+    );
+  } finally {
+    controller.dispose();
   }
 }
 

@@ -26,6 +26,7 @@ final appRouter = GoRouter(
               noteId: state.pathParameters['id']!,
               isNew: isNew,
               type: type,
+              folderId: state.uri.queryParameters['folder'],
             );
           },
         ),

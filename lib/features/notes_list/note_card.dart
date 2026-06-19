@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/date_format.dart';
 import '../../core/note_colors.dart';
 import '../../data/models/note.dart';
 
@@ -46,6 +47,12 @@ class NoteCard extends StatelessWidget {
                 const SizedBox(height: 6),
               ],
               _preview(context, onBg),
+              const SizedBox(height: 8),
+              Text(
+                'Edited ${relativeTime(note.updatedAt)}',
+                style: theme.textTheme.labelSmall
+                    ?.copyWith(color: onBg.withValues(alpha: 0.55)),
+              ),
             ],
           ),
         ),

@@ -20,6 +20,7 @@ class Note {
   final List<ChecklistItem> items; // used by NoteType.checklist
   final int color; // index into NoteColors.swatches
   final bool pinned;
+  final String? folderId; // owning folder id, or null when unfiled
   final NoteStatus status; // active | archived | trashed
   final int? trashedAt; // epoch ms — when it entered Trash (auto-empty timer)
   final int createdAt; // epoch ms
@@ -35,6 +36,7 @@ class Note {
     this.items = const [],
     this.color = 0,
     this.pinned = false,
+    this.folderId,
     this.status = NoteStatus.active,
     this.trashedAt,
     required this.createdAt,
@@ -64,6 +66,8 @@ class Note {
     List<ChecklistItem>? items,
     int? color,
     bool? pinned,
+    String? folderId,
+    bool clearFolderId = false,
     NoteStatus? status,
     int? trashedAt,
     bool clearTrashedAt = false,
@@ -79,6 +83,7 @@ class Note {
       items: items ?? this.items,
       color: color ?? this.color,
       pinned: pinned ?? this.pinned,
+      folderId: clearFolderId ? null : (folderId ?? this.folderId),
       status: status ?? this.status,
       trashedAt: clearTrashedAt ? null : (trashedAt ?? this.trashedAt),
       createdAt: createdAt,
@@ -100,6 +105,7 @@ class Note {
         'items': items.map((i) => i.toJson()).toList(),
         'color': color,
         'pinned': pinned,
+        'folderId': folderId,
         'status': status.name,
         'trashedAt': trashedAt,
         'createdAt': createdAt,
@@ -126,6 +132,7 @@ class Note {
           .toList(),
       color: (json['color'] as num?)?.toInt() ?? 0,
       pinned: (json['pinned'] as bool?) ?? false,
+      folderId: json['folderId'] as String?,
       status: NoteStatus.values.firstWhere(
         (s) => s.name == json['status'],
         orElse: () => NoteStatus.active,

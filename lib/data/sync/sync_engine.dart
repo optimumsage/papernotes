@@ -1,8 +1,13 @@
 import '../../core/constants.dart';
 import '../local/database.dart';
+import '../models/folder.dart';
 import '../models/note.dart';
 import '../settings_service.dart';
 import 'drive_client.dart';
+
+/// Drive file-name prefix marking a folder payload (`folder-<id>.json`). Note
+/// payloads are plain `<id>.json`, so the prefix partitions the two on listing.
+const _folderPrefix = 'folder-';
 
 class SyncResult {
   final int pulled;
@@ -35,12 +40,28 @@ class SyncEngine {
     _running = true;
     try {
       final remote = await _client.list();
-      final remoteById = {for (final f in remote) f.noteId: f};
-      final localById = {for (final r in await _db.allRawRows()) r.id: r};
+      // Partition the remote listing into note files and folder files.
+      final remoteNotes =
+          remote.where((f) => !f.noteId.startsWith(_folderPrefix)).toList();
+      final remoteFolders =
+          remote.where((f) => f.noteId.startsWith(_folderPrefix)).toList();
 
-      final pulled = await _pull(remote, localById);
-      final pushed = await _push(remoteById);
-      final purged = await _purge();
+      final remoteById = {for (final f in remoteNotes) f.noteId: f};
+      final localById = {for (final r in await _db.allRawRows()) r.id: r};
+      // Folder maps are keyed by the bare folder id (prefix stripped).
+      final remoteFolderById = {
+        for (final f in remoteFolders) _folderId(f.noteId): f
+      };
+      final localFolderById = {
+        for (final r in await _db.allRawFolderRows()) r.id: r
+      };
+
+      // Folders pull first so notes referencing them resolve to a known folder.
+      final pulled = await _pullFolders(remoteFolders, localFolderById) +
+          await _pull(remoteNotes, localById);
+      final pushed =
+          await _pushFolders(remoteFolderById) + await _push(remoteById);
+      final purged = await _purgeFolders() + await _purge();
 
       await _settings.setLastSyncedAt(_now);
       return SyncResult(pulled, pushed, purged);
@@ -122,6 +143,88 @@ class SyncEngine {
         }
       }
       await _db.hardDelete(note.id);
+    }
+    return expired.length;
+  }
+
+  // ---- Folders (mirror the note pull/push/purge, keyed by `folder-<id>`) ----
+
+  /// Strip the `folder-` prefix from a remote file's noteId to recover the
+  /// bare folder id.
+  String _folderId(String prefixedId) => prefixedId.substring(_folderPrefix.length);
+
+  /// The remote file name PaperNotes uses for a folder.
+  String _folderFileName(String id) => '$_folderPrefix$id';
+
+  Future<int> _pullFolders(
+      List<RemoteFile> remote, Map<String, FolderRow> localById) async {
+    var pulled = 0;
+    for (final file in remote) {
+      final id = _folderId(file.noteId);
+      final local = localById[id];
+
+      if (local != null &&
+          local.remoteModifiedTime != null &&
+          local.remoteModifiedTime == file.modifiedTime) {
+        continue;
+      }
+
+      final remoteFolder = Folder.fromJson(await _client.download(file.id));
+
+      if (local == null || remoteFolder.updatedAt > local.updatedAt) {
+        await _db.applyRemoteFolder(
+          remoteFolder,
+          driveFileId: file.id,
+          remoteModifiedTime: file.modifiedTime,
+        );
+        pulled++;
+      } else if (local.driveFileId == null) {
+        await _db.setFolderSyncMeta(
+          local.id,
+          driveFileId: file.id,
+          remoteModifiedTime: local.remoteModifiedTime,
+          dirty: local.dirty,
+        );
+      }
+    }
+    return pulled;
+  }
+
+  Future<int> _pushFolders(Map<String, RemoteFile> remoteById) async {
+    var pushed = 0;
+    for (final folder in await _db.dirtyFolders()) {
+      final raw = await _db.rawFolderRow(folder.id);
+      final existingId = raw?.driveFileId ?? remoteById[folder.id]?.id;
+      final fileId = _folderFileName(folder.id);
+
+      final result = existingId == null
+          ? await _client.create(fileId, folder.encode())
+          : await _client.update(existingId, fileId, folder.encode());
+
+      await _db.setFolderSyncMeta(
+        folder.id,
+        driveFileId: result.id,
+        remoteModifiedTime: result.modifiedTime,
+        dirty: false,
+      );
+      pushed++;
+    }
+    return pushed;
+  }
+
+  Future<int> _purgeFolders() async {
+    final cutoff = _now - AppConfig.tombstoneRetention.inMilliseconds;
+    final expired = await _db.expiredFolderTombstones(cutoff);
+    for (final folder in expired) {
+      final raw = await _db.rawFolderRow(folder.id);
+      if (raw?.driveFileId != null) {
+        try {
+          await _client.deleteFile(raw!.driveFileId!);
+        } catch (_) {
+          // Already gone remotely — fine to drop locally.
+        }
+      }
+      await _db.hardDeleteFolder(folder.id);
     }
     return expired.length;
   }

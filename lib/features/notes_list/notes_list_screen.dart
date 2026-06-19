@@ -15,7 +15,10 @@ class NotesListScreen extends ConsumerWidget {
   void _openNew(BuildContext context, WidgetRef ref, NoteType type) {
     // Pre-generate the id so the editor owns a real, unique note from the start.
     final id = const Uuid().v4();
-    context.push('/editor/$id?new=1&type=${type.name}');
+    // New notes inherit the folder currently being viewed (if any).
+    final folderId = ref.read(selectedFolderProvider);
+    final folderParam = folderId == null ? '' : '&folder=$folderId';
+    context.push('/editor/$id?new=1&type=${type.name}$folderParam');
   }
 
   @override
@@ -24,6 +27,7 @@ class NotesListScreen extends ConsumerWidget {
     final isLoading =
         ref.watch(activeNotesProvider).isLoading && notes.isEmpty;
     final searching = ref.watch(searchQueryProvider).isNotEmpty;
+    final folder = ref.watch(selectedFolderObjectProvider);
 
     // Manual cloud-sync action, shown only when Drive is connected.
     final driveConnected = ref.watch(settingsControllerProvider
@@ -33,7 +37,7 @@ class NotesListScreen extends ConsumerWidget {
 
     return NotesScaffold(
       route: '/',
-      title: 'PaperNotes',
+      title: folder?.name ?? 'PaperNotes',
       extraActions: [
         if (driveConnected)
           IconButton(
@@ -59,10 +63,19 @@ class NotesListScreen extends ConsumerWidget {
               ? NotesEmpty(
                   icon: searching
                       ? Icons.search_off_rounded
-                      : Icons.note_alt_outlined,
-                  title: searching ? 'No matching notes' : 'No notes yet',
-                  subtitle:
-                      searching ? null : 'Tap + to create your first note',
+                      : (folder != null
+                          ? Icons.folder_open_outlined
+                          : Icons.note_alt_outlined),
+                  title: searching
+                      ? 'No matching notes'
+                      : (folder != null
+                          ? 'No notes in "${folder.name}"'
+                          : 'No notes yet'),
+                  subtitle: searching
+                      ? null
+                      : (folder != null
+                          ? 'Tap + to add one, or move notes into this folder'
+                          : 'Tap + to create your first note'),
                 )
               : NotesView(notes: notes, mode: NotesViewMode.active),
     );

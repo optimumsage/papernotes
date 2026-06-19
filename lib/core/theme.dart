@@ -33,7 +33,7 @@ class AppTheme {
         scrolledUnderElevation: 0,
         centerTitle: false,
         titleTextStyle: GoogleFonts.inter(
-          fontSize: 22,
+          fontSize: 20,
           fontWeight: FontWeight.w700,
           color: scheme.onSurface,
         ),
