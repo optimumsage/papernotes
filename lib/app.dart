@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/theme.dart';
+import 'desktop/tray_service.dart';
 import 'providers/providers.dart';
 import 'router.dart';
 
@@ -26,6 +27,8 @@ class _PaperNotesAppState extends ConsumerState<PaperNotesApp>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _onLaunch();
       _rebuildSyncTimer();
+      // Desktop: set up the system tray + hide-on-close behavior.
+      if (TrayService.isSupported) unawaited(TrayService.instance.init());
     });
   }
 
@@ -81,6 +84,9 @@ class _PaperNotesAppState extends ConsumerState<PaperNotesApp>
     final fontScale = ref.watch(
       settingsControllerProvider.select((s) => s.fontScale),
     );
+    // Keep the reminder reconciler alive so it watches the notes stream and
+    // schedules/cancels OS reminders as notes change.
+    ref.watch(reminderReconcilerProvider);
     // Rebuild the sync timer if the interval/toggle changed.
     ref.listen(
       settingsControllerProvider.select(

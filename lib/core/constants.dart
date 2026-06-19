@@ -18,6 +18,7 @@ class AppKeys {
   static const autoSyncMinutes = 'auto_sync_minutes'; // int
   static const confirmDelete = 'confirm_delete'; // bool
   static const trashRetentionDays = 'trash_retention_days'; // int, 0 = never
+  static const previewLines = 'preview_lines'; // int 1..8, body preview lines
 
   // SecureStore keys (encrypted secrets)
   static const driveClientSecret = 'drive_client_secret';
@@ -45,6 +46,11 @@ class AppConfig {
   /// Defaults for newly-installed apps.
   static const defaultAutoSyncMinutes = 5;
   static const defaultTrashRetentionDays = 30;
+
+  /// How many lines of a note's body preview a card shows in the list/grid.
+  static const defaultPreviewLines = 8;
+  static const minPreviewLines = 1;
+  static const maxPreviewLines = 8;
 
   /// Selectable auto-sync intervals (minutes) and trash retention windows.
   static const autoSyncOptions = [5, 15, 30, 60];

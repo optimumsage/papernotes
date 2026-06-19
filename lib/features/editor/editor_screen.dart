@@ -6,9 +6,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants.dart';
 import '../../core/date_format.dart';
 import '../../core/note_colors.dart';
+import '../../core/note_share.dart';
 import '../../data/models/checklist_item.dart';
 import '../../data/models/note.dart';
 import '../../providers/providers.dart';
+import '../reminders/reminder_sheet.dart';
 import 'checklist_body.dart';
 import 'color_picker.dart';
 
@@ -41,6 +43,10 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
   final _titleController = TextEditingController();
   final _bodyController = TextEditingController();
   Timer? _debounce;
+
+  /// True once the user actually changes something. Prevents merely opening a
+  /// note (then leaving) from bumping its `updatedAt` / re-syncing it.
+  bool _dirty = false;
 
   @override
   void initState() {
@@ -81,6 +87,7 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
   // ---- persistence ----
 
   void _scheduleSave() {
+    _dirty = true;
     _note = _note.copyWith(
       title: _titleController.text,
       body: _bodyController.text,
@@ -96,6 +103,7 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
       body: _bodyController.text,
     );
     if (_shouldDiscard) return; // don't persist invalid/empty drafts
+    if (!_dirty) return; // nothing changed — don't bump updatedAt
     await ref.read(noteRepositoryProvider).save(_note);
   }
 
@@ -115,7 +123,7 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     );
     if (_shouldDiscard) {
       await ref.read(noteRepositoryProvider).discardDraft(_note.id);
-    } else {
+    } else if (_dirty) {
       await ref.read(noteRepositoryProvider).save(_note);
     }
   }
@@ -187,6 +195,24 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     _scheduleSave();
   }
 
+  /// Persist current edits, then open the reminder sheet so the row exists for
+  /// [NoteRepository.setReminder] to update.
+  Future<void> _openReminder() async {
+    await _flush();
+    if (_shouldDiscard || !mounted) return;
+    await ReminderSheet.show(context, ref, _note);
+  }
+
+  Future<void> _share() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final shared = await shareNote(_note);
+    if (!shared) {
+      messenger.clearSnackBars();
+      messenger.showSnackBar(
+          const SnackBar(content: Text('Copied to clipboard')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!_loaded) {
@@ -246,6 +272,10 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
                     switch (value) {
                       case 'add_title':
                         setState(() => _showTitle = true);
+                      case 'reminder':
+                        _openReminder();
+                      case 'share':
+                        _share();
                       case 'archive':
                         _archive();
                       case 'delete':
@@ -263,6 +293,30 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
                           title: Text('Add title'),
                         ),
                       ),
+                    // Reminders only fire for active notes.
+                    if (!_note.isArchived)
+                      PopupMenuItem(
+                        value: 'reminder',
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(_note.hasReminder
+                              ? Icons.notifications_active_outlined
+                              : Icons.notifications_outlined),
+                          title: Text(_note.hasReminder
+                              ? 'Edit reminder…'
+                              : 'Reminder…'),
+                        ),
+                      ),
+                    const PopupMenuItem(
+                      value: 'share',
+                      child: ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.share_outlined),
+                        title: Text('Share'),
+                      ),
+                    ),
                     if (!widget.isNew)
                       const PopupMenuItem(
                         value: 'archive',

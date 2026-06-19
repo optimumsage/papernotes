@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/app_snackbar.dart';
+import '../../core/constants.dart';
 import '../../core/note_colors.dart';
 import '../../data/update_service.dart';
 import '../../providers/providers.dart';
@@ -252,6 +253,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       context,
                       selected: settings.defaultColor,
                       onPick: ctrl.setDefaultColor,
+                    ),
+                  ),
+                  const Divider(height: 28),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Card preview lines'),
+                    subtitle:
+                        const Text('Lines of a note shown on each card'),
+                    trailing: DropdownButton<int>(
+                      value: settings.previewLines,
+                      underline: const SizedBox.shrink(),
+                      items: [
+                        for (var n = AppConfig.minPreviewLines;
+                            n <= AppConfig.maxPreviewLines;
+                            n++)
+                          DropdownMenuItem(value: n, child: Text('$n')),
+                      ],
+                      onChanged: (v) =>
+                          v == null ? null : ctrl.setPreviewLines(v),
                     ),
                   ),
                 ],

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -6,6 +8,8 @@ import '../core/note_sort.dart';
 import '../data/local/database.dart';
 import '../data/models/folder.dart';
 import '../data/models/note.dart';
+import '../data/reminders/reminder_reconciler.dart';
+import '../data/reminders/reminder_service.dart';
 import '../data/repositories/folder_repository.dart';
 import '../data/repositories/note_repository.dart';
 import '../data/settings_service.dart';
@@ -30,11 +34,18 @@ final settingsServiceProvider = Provider<SettingsService>(
 );
 
 final noteRepositoryProvider = Provider<NoteRepository>(
-  (ref) => NoteRepository(ref.watch(databaseProvider)),
+  (ref) => NoteRepository(
+    ref.watch(databaseProvider),
+    // Push note changes to Drive shortly after they happen (debounced).
+    onChanged: () => ref.read(syncControllerProvider.notifier).requestSync(),
+  ),
 );
 
 final folderRepositoryProvider = Provider<FolderRepository>(
-  (ref) => FolderRepository(ref.watch(databaseProvider)),
+  (ref) => FolderRepository(
+    ref.watch(databaseProvider),
+    onChanged: () => ref.read(syncControllerProvider.notifier).requestSync(),
+  ),
 );
 
 final driveAuthProvider = Provider<DriveAuth>(
@@ -56,6 +67,36 @@ final syncEngineProvider = Provider<SyncEngine>(
 );
 
 final updateServiceProvider = Provider<UpdateService>((_) => UpdateService());
+
+// ---- Reminders ----
+
+/// Notification backend. Overridden in main() with an already-`init()`ed
+/// instance so it's ready before the first reconcile / UI build.
+final reminderServiceProvider = Provider<ReminderService>(
+  (_) => ReminderService(),
+);
+
+/// Reconciles OS reminders with notes' reminder fields. Watches the active
+/// notes stream so every create/edit/delete (and remote sync) converges here.
+/// Kept alive by [PaperNotesApp] (`ref.watch`) so its subscription persists.
+final reminderReconcilerProvider = Provider<ReminderReconciler>((ref) {
+  final reconciler = ReminderReconciler(
+    ref.read(reminderServiceProvider),
+    // A fired/past timed alarm is one-shot: clear it so it doesn't re-fire.
+    onFired: (id) =>
+        ref.read(noteRepositoryProvider).setReminder(id, ReminderType.none, null),
+  );
+  ref.onDispose(reconciler.dispose);
+  ref.listen<AsyncValue<List<Note>>>(
+    activeNotesProvider,
+    (_, next) {
+      final notes = next.value;
+      if (notes != null) reconciler.reconcile(notes);
+    },
+    fireImmediately: true,
+  );
+  return reconciler;
+});
 
 // ---- Notes lists (active / archive / trash) + search ----
 
@@ -214,6 +255,11 @@ class SettingsController extends Notifier<AppSettings> {
     state = state.copyWith(trashRetentionDays: value);
   }
 
+  Future<void> setPreviewLines(int value) async {
+    await _service.setPreviewLines(value);
+    state = state.copyWith(previewLines: value);
+  }
+
   Future<void> setCredentials(String clientId, String clientSecret) async {
     await _service.setClientId(clientId.trim());
     if (clientSecret.isNotEmpty) {
@@ -241,8 +287,21 @@ final syncControllerProvider =
     NotifierProvider<SyncController, SyncStatus>(SyncController.new);
 
 class SyncController extends Notifier<SyncStatus> {
+  Timer? _debounce;
+
   @override
-  SyncStatus build() => const SyncStatus(SyncPhase.idle);
+  SyncStatus build() {
+    ref.onDispose(() => _debounce?.cancel());
+    return const SyncStatus(SyncPhase.idle);
+  }
+
+  /// Debounced auto-sync after a note/folder mutation. Coalesces bursts (e.g.
+  /// the editor's frequent autosaves) into a single sync a few seconds later.
+  /// No-ops at fire time when sync is disabled / signed out (see [syncNow]).
+  void requestSync() {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(seconds: 3), () => unawaited(syncNow()));
+  }
 
   /// Sign in interactively, then enable sync and run the first sync.
   Future<void> signInAndEnable() async {

@@ -7,10 +7,18 @@ import '../../data/models/note.dart';
 /// A single Keep-style card in the notes grid. Shows the title only when set,
 /// a short preview of the body or checklist, and the note's color.
 class NoteCard extends StatelessWidget {
-  const NoteCard({super.key, required this.note, required this.onTap});
+  const NoteCard({
+    super.key,
+    required this.note,
+    required this.onTap,
+    this.maxPreviewLines = 8,
+  });
 
   final Note note;
   final VoidCallback onTap;
+
+  /// How many lines of the body/checklist preview to show (user setting, 1..8).
+  final int maxPreviewLines;
 
   @override
   Widget build(BuildContext context) {
@@ -31,10 +39,27 @@ class NoteCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (note.pinned)
+              if (note.pinned || note.hasReminder)
                 Align(
                   alignment: Alignment.topRight,
-                  child: Icon(Icons.push_pin, size: 14, color: onBg.withValues(alpha: 0.5)),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (note.hasReminder)
+                        Icon(
+                          note.reminderType == ReminderType.pinned
+                              ? Icons.push_pin_outlined
+                              : Icons.alarm,
+                          size: 14,
+                          color: onBg.withValues(alpha: 0.5),
+                        ),
+                      if (note.pinned) ...[
+                        if (note.hasReminder) const SizedBox(width: 4),
+                        Icon(Icons.push_pin,
+                            size: 14, color: onBg.withValues(alpha: 0.5)),
+                      ],
+                    ],
+                  ),
                 ),
               if (note.hasTitle) ...[
                 Text(
@@ -63,7 +88,7 @@ class NoteCard extends StatelessWidget {
   Widget _preview(BuildContext context, Color onBg) {
     final theme = Theme.of(context);
     if (note.isChecklist) {
-      final shown = note.items.take(6).toList();
+      final shown = note.items.take(maxPreviewLines).toList();
       final remaining = note.items.length - shown.length;
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -117,7 +142,7 @@ class NoteCard extends StatelessWidget {
     if (body.isEmpty) return const SizedBox.shrink();
     return Text(
       body,
-      maxLines: 8,
+      maxLines: maxPreviewLines,
       overflow: TextOverflow.ellipsis,
       style: theme.textTheme.bodyMedium
           ?.copyWith(color: onBg.withValues(alpha: 0.9), height: 1.35),

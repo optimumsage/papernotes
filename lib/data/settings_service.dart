@@ -24,6 +24,7 @@ class AppSettings {
   final int autoSyncMinutes;
   final bool confirmDelete;
   final int trashRetentionDays; // 0 = never auto-empty
+  final int previewLines; // body preview lines shown on a card (1..8)
 
   const AppSettings({
     this.syncEnabled = false,
@@ -41,6 +42,7 @@ class AppSettings {
     this.autoSyncMinutes = AppConfig.defaultAutoSyncMinutes,
     this.confirmDelete = true,
     this.trashRetentionDays = AppConfig.defaultTrashRetentionDays,
+    this.previewLines = AppConfig.defaultPreviewLines,
   });
 
   bool get isConfigured =>
@@ -62,6 +64,7 @@ class AppSettings {
     int? autoSyncMinutes,
     bool? confirmDelete,
     int? trashRetentionDays,
+    int? previewLines,
   }) {
     return AppSettings(
       syncEnabled: syncEnabled ?? this.syncEnabled,
@@ -79,6 +82,7 @@ class AppSettings {
       autoSyncMinutes: autoSyncMinutes ?? this.autoSyncMinutes,
       confirmDelete: confirmDelete ?? this.confirmDelete,
       trashRetentionDays: trashRetentionDays ?? this.trashRetentionDays,
+      previewLines: previewLines ?? this.previewLines,
     );
   }
 }
@@ -115,6 +119,8 @@ class SettingsService {
       confirmDelete: _prefs.getBool(AppKeys.confirmDelete) ?? true,
       trashRetentionDays: _prefs.getInt(AppKeys.trashRetentionDays) ??
           AppConfig.defaultTrashRetentionDays,
+      previewLines: _prefs.getInt(AppKeys.previewLines) ??
+          AppConfig.defaultPreviewLines,
     );
   }
 
@@ -150,6 +156,9 @@ class SettingsService {
 
   Future<void> setTrashRetentionDays(int value) =>
       _prefs.setInt(AppKeys.trashRetentionDays, value);
+
+  Future<void> setPreviewLines(int value) =>
+      _prefs.setInt(AppKeys.previewLines, value);
 
   Future<void> setLastSyncedAt(int epochMs) =>
       _prefs.setInt(AppKeys.lastSyncedAt, epochMs);

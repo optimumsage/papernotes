@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/app_snackbar.dart';
+import '../../core/note_share.dart';
 import '../../data/models/folder.dart';
 import '../../data/models/note.dart';
 import '../../providers/providers.dart';
 import '../editor/color_picker.dart';
+import '../reminders/reminder_sheet.dart';
 import 'notes_view.dart';
 
 /// Logical actions a note context menu can offer.
@@ -14,6 +16,8 @@ enum _NoteAction {
   unpin,
   color,
   moveToFolder,
+  reminder,
+  share,
   archive,
   unarchive,
   trash,
@@ -30,6 +34,15 @@ class _ActionSpec {
       {this.destructive = false});
 }
 
+/// Reminder entry whose label reflects whether one is already set.
+_ActionSpec _reminderSpec(Note note) => _ActionSpec(
+      _NoteAction.reminder,
+      note.hasReminder
+          ? Icons.notifications_active_outlined
+          : Icons.notifications_outlined,
+      note.hasReminder ? 'Edit reminder…' : 'Reminder…',
+    );
+
 List<_ActionSpec> _specsFor(Note note, NotesViewMode mode) {
   switch (mode) {
     case NotesViewMode.active:
@@ -40,6 +53,8 @@ List<_ActionSpec> _specsFor(Note note, NotesViewMode mode) {
         const _ActionSpec(_NoteAction.color, Icons.palette_outlined, 'Color…'),
         const _ActionSpec(_NoteAction.moveToFolder,
             Icons.drive_file_move_outlined, 'Move to folder…'),
+        _reminderSpec(note),
+        const _ActionSpec(_NoteAction.share, Icons.share_outlined, 'Share'),
         const _ActionSpec(_NoteAction.archive, Icons.archive_outlined, 'Archive'),
         const _ActionSpec(_NoteAction.trash, Icons.delete_outline, 'Delete',
             destructive: true),
@@ -50,6 +65,8 @@ List<_ActionSpec> _specsFor(Note note, NotesViewMode mode) {
         const _ActionSpec(_NoteAction.color, Icons.palette_outlined, 'Color…'),
         const _ActionSpec(_NoteAction.moveToFolder,
             Icons.drive_file_move_outlined, 'Move to folder…'),
+        // Reminders only fire for active notes, so they aren't offered here.
+        const _ActionSpec(_NoteAction.share, Icons.share_outlined, 'Share'),
         const _ActionSpec(_NoteAction.trash, Icons.delete_outline, 'Delete',
             destructive: true),
       ];
@@ -152,6 +169,13 @@ Future<void> _run(BuildContext context, WidgetRef ref, _NoteAction action,
       }
     case _NoteAction.moveToFolder:
       if (context.mounted) await _moveToFolder(context, ref, note);
+    case _NoteAction.reminder:
+      if (context.mounted) await ReminderSheet.show(context, ref, note);
+    case _NoteAction.share:
+      final shared = await shareNote(note);
+      if (!shared && context.mounted) {
+        showAppSnackBar(context, 'Copied to clipboard');
+      }
     case _NoteAction.archive:
       await repo.archive(note.id);
       if (context.mounted) {

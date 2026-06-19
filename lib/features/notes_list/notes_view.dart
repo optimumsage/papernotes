@@ -42,7 +42,8 @@ class NotesView extends ConsumerWidget {
       defaultTargetPlatform == TargetPlatform.macOS ||
       defaultTargetPlatform == TargetPlatform.windows;
 
-  Widget _wrap(BuildContext context, WidgetRef ref, Note note) {
+  Widget _wrap(
+      BuildContext context, WidgetRef ref, Note note, int previewLines) {
     // InkWell inside NoteCard claims normal taps; secondary-tap and long-press
     // fall through to this GestureDetector and open the context menu at the
     // pointer position.
@@ -58,6 +59,7 @@ class NotesView extends ConsumerWidget {
           child: NoteCard(
             note: note,
             onTap: () => _onCardTap(context, ref, note),
+            maxPreviewLines: previewLines,
           ),
         ),
       ),
@@ -78,13 +80,15 @@ class NotesView extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final viewStyle =
         ref.watch(settingsControllerProvider.select((s) => s.viewStyle));
+    final previewLines =
+        ref.watch(settingsControllerProvider.select((s) => s.previewLines));
 
     if (viewStyle == ViewStyle.list) {
       return ListView.separated(
         padding: const EdgeInsets.fromLTRB(12, 4, 12, 96),
         itemCount: notes.length,
         separatorBuilder: (_, _) => const SizedBox(height: 10),
-        itemBuilder: (context, i) => _wrap(context, ref, notes[i]),
+        itemBuilder: (context, i) => _wrap(context, ref, notes[i], previewLines),
       );
     }
 
@@ -96,7 +100,7 @@ class NotesView extends ConsumerWidget {
       crossAxisSpacing: 12,
       padding: const EdgeInsets.fromLTRB(12, 4, 12, 96),
       itemCount: notes.length,
-      itemBuilder: (context, i) => _wrap(context, ref, notes[i]),
+      itemBuilder: (context, i) => _wrap(context, ref, notes[i], previewLines),
     );
   }
 }

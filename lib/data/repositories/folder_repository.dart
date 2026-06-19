@@ -7,10 +7,13 @@ import '../models/folder.dart';
 /// `updatedAt` and marks the row `dirty` so the sync engine pushes it. Folders
 /// are flat (no nesting) and never talk to Drive directly.
 class FolderRepository {
-  FolderRepository(this._db);
+  FolderRepository(this._db, {this.onChanged});
 
   final AppDatabase _db;
   static const _uuid = Uuid();
+
+  /// Called after every persisted mutation (e.g. to trigger a debounced sync).
+  final void Function()? onChanged;
 
   int get _now => DateTime.now().millisecondsSinceEpoch;
 
@@ -28,6 +31,7 @@ class FolderRepository {
       updatedAt: now,
     );
     await _db.upsertFolder(folder, dirty: true);
+    onChanged?.call();
     return folder;
   }
 
@@ -38,6 +42,7 @@ class FolderRepository {
       folder.copyWith(name: name.trim(), updatedAt: _now),
       dirty: true,
     );
+    onChanged?.call();
   }
 
   /// Tombstone a folder and unfile every note it held (notes fall back to the
@@ -58,5 +63,6 @@ class FolderRepository {
       folder.copyWith(deleted: true, deletedAt: now, updatedAt: now),
       dirty: true,
     );
+    onChanged?.call();
   }
 }

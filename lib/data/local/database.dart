@@ -31,6 +31,11 @@ class Notes extends Table {
   BoolColumn get deleted => boolean().withDefault(const Constant(false))();
   IntColumn get deletedAt => integer().nullable()();
 
+  // Reminders
+  TextColumn get reminderType =>
+      text().withDefault(const Constant('none'))(); // none|alarm|pinned
+  IntColumn get reminderAt => integer().nullable()(); // epoch ms (alarm)
+
   // Sync metadata
   TextColumn get driveFileId => text().nullable()();
   TextColumn get remoteModifiedTime => text().nullable()();
@@ -66,7 +71,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -78,6 +83,10 @@ class AppDatabase extends _$AppDatabase {
           if (from < 3) {
             await m.addColumn(notes, notes.folderId);
             await m.createTable(folders);
+          }
+          if (from < 4) {
+            await m.addColumn(notes, notes.reminderType);
+            await m.addColumn(notes, notes.reminderAt);
           }
         },
       );
@@ -308,6 +317,11 @@ class AppDatabase extends _$AppDatabase {
         updatedAt: row.updatedAt,
         deleted: row.deleted,
         deletedAt: row.deletedAt,
+        reminderType: ReminderType.values.firstWhere(
+          (r) => r.name == row.reminderType,
+          orElse: () => ReminderType.none,
+        ),
+        reminderAt: row.reminderAt,
       );
 
   NotesCompanion _toCompanion(Note note, {required bool dirty}) {
@@ -326,6 +340,8 @@ class AppDatabase extends _$AppDatabase {
       updatedAt: Value(note.updatedAt),
       deleted: Value(note.deleted),
       deletedAt: Value(note.deletedAt),
+      reminderType: Value(note.reminderType.name),
+      reminderAt: Value(note.reminderAt),
       dirty: Value(dirty),
     );
   }

@@ -4,6 +4,11 @@ import 'checklist_item.dart';
 
 enum NoteType { note, checklist }
 
+/// A note's reminder mode. `none` = no reminder; `alarm` = fire a notification at
+/// [Note.reminderAt]; `pinned` = keep a persistent ("pinned to status bar")
+/// notification while the reminder is set.
+enum ReminderType { none, alarm, pinned }
+
 /// Lifecycle state of a note. `active` notes show on the main grid, `archived`
 /// in the Archive view, `trashed` in Trash. Permanent deletion is tracked
 /// separately by the `deleted` tombstone flag.
@@ -27,6 +32,8 @@ class Note {
   final int updatedAt; // epoch ms — drives last-write-wins
   final bool deleted; // hard tombstone (permanent delete)
   final int? deletedAt; // epoch ms
+  final ReminderType reminderType; // none | alarm | pinned
+  final int? reminderAt; // epoch ms — trigger time for ReminderType.alarm
 
   const Note({
     required this.id,
@@ -43,12 +50,15 @@ class Note {
     required this.updatedAt,
     this.deleted = false,
     this.deletedAt,
+    this.reminderType = ReminderType.none,
+    this.reminderAt,
   });
 
   bool get isChecklist => type == NoteType.checklist;
   bool get hasTitle => title != null && title!.trim().isNotEmpty;
   bool get isArchived => status == NoteStatus.archived;
   bool get isTrashed => status == NoteStatus.trashed;
+  bool get hasReminder => reminderType != ReminderType.none;
 
   /// True when the note carries no user content and can be safely discarded.
   bool get isEmpty {
@@ -74,6 +84,9 @@ class Note {
     int? updatedAt,
     bool? deleted,
     int? deletedAt,
+    ReminderType? reminderType,
+    int? reminderAt,
+    bool clearReminderAt = false,
   }) {
     return Note(
       id: id,
@@ -90,6 +103,8 @@ class Note {
       updatedAt: updatedAt ?? this.updatedAt,
       deleted: deleted ?? this.deleted,
       deletedAt: deletedAt ?? this.deletedAt,
+      reminderType: reminderType ?? this.reminderType,
+      reminderAt: clearReminderAt ? null : (reminderAt ?? this.reminderAt),
     );
   }
 
@@ -112,6 +127,8 @@ class Note {
         'updatedAt': updatedAt,
         'deleted': deleted,
         'deletedAt': deletedAt,
+        'reminderType': reminderType.name,
+        'reminderAt': reminderAt,
       };
 
   String encode() => jsonEncode(toJson());
@@ -142,6 +159,11 @@ class Note {
       updatedAt: (json['updatedAt'] as num).toInt(),
       deleted: (json['deleted'] as bool?) ?? false,
       deletedAt: (json['deletedAt'] as num?)?.toInt(),
+      reminderType: ReminderType.values.firstWhere(
+        (r) => r.name == json['reminderType'],
+        orElse: () => ReminderType.none,
+      ),
+      reminderAt: (json['reminderAt'] as num?)?.toInt(),
     );
   }
 

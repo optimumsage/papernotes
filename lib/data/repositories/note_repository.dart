@@ -8,10 +8,14 @@ import '../models/note.dart';
 /// stamps `updatedAt` and marks the row `dirty` so the sync engine knows to
 /// push it. The repository never talks to Drive directly.
 class NoteRepository {
-  NoteRepository(this._db);
+  NoteRepository(this._db, {this.onChanged});
 
   final AppDatabase _db;
   static const _uuid = Uuid();
+
+  /// Called after every persisted mutation so callers can react (e.g. trigger a
+  /// debounced Drive sync). Optional so tests can construct the repo bare.
+  final void Function()? onChanged;
 
   int get _now => DateTime.now().millisecondsSinceEpoch;
 
@@ -44,8 +48,9 @@ class NoteRepository {
   ChecklistItem newItem() => ChecklistItem(id: _uuid.v4());
 
   /// Persist a note, bumping `updatedAt` and marking it dirty for sync.
-  Future<void> save(Note note) {
-    return _db.upsertNote(note.copyWith(updatedAt: _now), dirty: true);
+  Future<void> save(Note note) async {
+    await _db.upsertNote(note.copyWith(updatedAt: _now), dirty: true);
+    onChanged?.call();
   }
 
   // ---- Lifecycle: archive / trash / restore / permanent delete ----
@@ -62,6 +67,7 @@ class NoteRepository {
       ),
       dirty: true,
     );
+    onChanged?.call();
   }
 
   /// Move a note to Trash (recoverable). Records when it was trashed so it can
@@ -87,6 +93,7 @@ class NoteRepository {
       note.copyWith(deleted: true, deletedAt: now, updatedAt: now),
       dirty: true,
     );
+    onChanged?.call();
   }
 
   /// Permanently delete every note currently in Trash.
@@ -117,6 +124,7 @@ class NoteRepository {
       note.copyWith(color: color, updatedAt: _now),
       dirty: true,
     );
+    onChanged?.call();
   }
 
   /// Move a note into [folderId] (null unfiles it).
@@ -131,6 +139,7 @@ class NoteRepository {
       ),
       dirty: true,
     );
+    onChanged?.call();
   }
 
   Future<void> setPinned(String id, bool pinned) async {
@@ -140,6 +149,25 @@ class NoteRepository {
       note.copyWith(pinned: pinned, updatedAt: _now),
       dirty: true,
     );
+    onChanged?.call();
+  }
+
+  /// Set or clear a note's reminder. [type] null (or [ReminderType.none])
+  /// clears it; [at] is the trigger time (epoch ms) for a timed alarm.
+  Future<void> setReminder(String id, ReminderType? type, int? at) async {
+    final note = await _db.getNote(id);
+    if (note == null) return;
+    final effective = type ?? ReminderType.none;
+    await _db.upsertNote(
+      note.copyWith(
+        reminderType: effective,
+        reminderAt: effective == ReminderType.alarm ? at : null,
+        clearReminderAt: effective != ReminderType.alarm,
+        updatedAt: _now,
+      ),
+      dirty: true,
+    );
+    onChanged?.call();
   }
 }
 
