@@ -24,10 +24,17 @@ class ReminderReconciler {
   final Map<String, String> _applied = {};
   // Desktop in-app timers (one per pending alarm).
   final Map<String, Timer> _timers = {};
+  // Aggregate signature of the Android foreground-service pinned set.
+  String _pinnedSig = '';
 
   String _sig(Note n) => '${n.reminderType.name}|${n.reminderAt ?? 0}';
 
   int get _now => DateTime.now().millisecondsSinceEpoch;
+
+  /// Pinned notes handled by the Android foreground service (not the per-note
+  /// FLN path) — kept out of [_applied] so the two paths can't double up.
+  bool _isForegroundPinned(Note n) =>
+      _service.usesForegroundPinned && n.reminderType == ReminderType.pinned;
 
   void reconcile(List<Note> notes) {
     // Wait until notifications are initialized; a later stream emission (or the
@@ -39,13 +46,30 @@ class ReminderReconciler {
         if (n.hasReminder && !n.deleted && !n.isTrashed) n.id: n,
     };
 
-    // Clear reminders for notes that disappeared or lost their reminder.
-    for (final id in _applied.keys.toList()) {
-      if (!desired.containsKey(id)) _clear(id);
+    // Android: pinned reminders are backed by one foreground service so the OS
+    // keeps them locked. Reconcile the whole set together, only when it changes.
+    if (_service.usesForegroundPinned) {
+      final pinned = desired.values
+          .where((n) => n.reminderType == ReminderType.pinned)
+          .toList()
+        ..sort((a, b) => a.id.compareTo(b.id));
+      final sig = pinned.map((n) => '${n.id}:${n.updatedAt}').join('|');
+      if (sig != _pinnedSig) {
+        _pinnedSig = sig;
+        _service.syncPinned(pinned);
+      }
     }
 
-    // Apply new or changed reminders.
+    // Clear reminders for notes that disappeared, lost their reminder, or moved
+    // onto the foreground-service path (so a stale alarm/timer is torn down).
+    for (final id in _applied.keys.toList()) {
+      final note = desired[id];
+      if (note == null || _isForegroundPinned(note)) _clear(id);
+    }
+
+    // Apply new or changed reminders (skipping the foreground-pinned set).
     for (final note in desired.values) {
+      if (_isForegroundPinned(note)) continue;
       final sig = _sig(note);
       if (_applied[note.id] == sig) continue;
       _apply(note);

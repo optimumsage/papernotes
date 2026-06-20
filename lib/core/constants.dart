@@ -19,6 +19,7 @@ class AppKeys {
   static const confirmDelete = 'confirm_delete'; // bool
   static const trashRetentionDays = 'trash_retention_days'; // int, 0 = never
   static const previewLines = 'preview_lines'; // int 1..8, body preview lines
+  static const launchAtStartup = 'launch_at_startup'; // bool, desktop only
 
   // SecureStore keys (encrypted secrets)
   static const driveClientSecret = 'drive_client_secret';

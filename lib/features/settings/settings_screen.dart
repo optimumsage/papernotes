@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/app_snackbar.dart';
 import '../../core/constants.dart';
 import '../../core/note_colors.dart';
+import '../../core/platform.dart';
 import '../../data/update_service.dart';
 import '../../providers/providers.dart';
 import '../editor/color_picker.dart';
@@ -433,6 +434,21 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ],
             ),
           ),
+
+          // ---- Desktop ----
+          if (isDesktopPlatform) ...[
+            const SizedBox(height: 16),
+            _sectionLabel(context, 'Desktop'),
+            Card(
+              child: SwitchListTile(
+                title: const Text('Launch at startup'),
+                subtitle: const Text(
+                    'Open PaperNotes automatically when you sign in'),
+                value: settings.launchAtStartup,
+                onChanged: ctrl.setLaunchAtStartup,
+              ),
+            ),
+          ],
 
           // ---- About ----
           const SizedBox(height: 16),

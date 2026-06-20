@@ -25,6 +25,7 @@ class AppSettings {
   final bool confirmDelete;
   final int trashRetentionDays; // 0 = never auto-empty
   final int previewLines; // body preview lines shown on a card (1..8)
+  final bool launchAtStartup; // desktop: open the app at login
 
   const AppSettings({
     this.syncEnabled = false,
@@ -43,6 +44,7 @@ class AppSettings {
     this.confirmDelete = true,
     this.trashRetentionDays = AppConfig.defaultTrashRetentionDays,
     this.previewLines = AppConfig.defaultPreviewLines,
+    this.launchAtStartup = false,
   });
 
   bool get isConfigured =>
@@ -65,6 +67,7 @@ class AppSettings {
     bool? confirmDelete,
     int? trashRetentionDays,
     int? previewLines,
+    bool? launchAtStartup,
   }) {
     return AppSettings(
       syncEnabled: syncEnabled ?? this.syncEnabled,
@@ -83,6 +86,7 @@ class AppSettings {
       confirmDelete: confirmDelete ?? this.confirmDelete,
       trashRetentionDays: trashRetentionDays ?? this.trashRetentionDays,
       previewLines: previewLines ?? this.previewLines,
+      launchAtStartup: launchAtStartup ?? this.launchAtStartup,
     );
   }
 }
@@ -121,6 +125,7 @@ class SettingsService {
           AppConfig.defaultTrashRetentionDays,
       previewLines: _prefs.getInt(AppKeys.previewLines) ??
           AppConfig.defaultPreviewLines,
+      launchAtStartup: _prefs.getBool(AppKeys.launchAtStartup) ?? false,
     );
   }
 
@@ -159,6 +164,9 @@ class SettingsService {
 
   Future<void> setPreviewLines(int value) =>
       _prefs.setInt(AppKeys.previewLines, value);
+
+  Future<void> setLaunchAtStartup(bool value) =>
+      _prefs.setBool(AppKeys.launchAtStartup, value);
 
   Future<void> setLastSyncedAt(int epochMs) =>
       _prefs.setInt(AppKeys.lastSyncedAt, epochMs);

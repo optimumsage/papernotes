@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:local_notifier/local_notifier.dart';
@@ -8,6 +9,29 @@ import 'package:timezone/data/latest_all.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 
 import '../models/note.dart';
+
+/// Foreground-service entry point for locked "pinned" reminders on Android.
+/// Must be a top-level function so it survives release-mode tree-shaking.
+@pragma('vm:entry-point')
+void pinnedReminderCallback() {
+  FlutterForegroundTask.setTaskHandler(_PinnedReminderTaskHandler());
+}
+
+/// The pinned-reminder service only needs to keep its notification alive; it
+/// does no periodic work. Tapping the notification opens the app.
+class _PinnedReminderTaskHandler extends TaskHandler {
+  @override
+  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {}
+
+  @override
+  void onRepeatEvent(DateTime timestamp) {}
+
+  @override
+  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {}
+
+  @override
+  void onNotificationPressed() => FlutterForegroundTask.launchApp();
+}
 
 /// Cross-platform reminder notifications.
 ///
@@ -37,6 +61,12 @@ class ReminderService {
   /// Elsewhere the in-app scheduler keeps timers and calls [showNow].
   bool get nativeScheduling => !kIsWeb && Platform.isAndroid;
 
+  /// On Android, "pinned" reminders are backed by a foreground service so the
+  /// OS keeps them locked in the status bar (un-swipeable even on Android 14+,
+  /// which lets users dismiss ordinary ongoing notifications). Other platforms
+  /// keep using an ongoing notification driven by the in-app reconciler.
+  bool get usesForegroundPinned => !kIsWeb && Platform.isAndroid;
+
   Future<void> init() async {
     if (_ready) return;
     try {
@@ -56,6 +86,7 @@ class ReminderService {
           ),
         );
         await _requestPermissions();
+        if (usesForegroundPinned) _initForegroundService();
       } else if (_useLocalNotifier) {
         await localNotifier.setup(appName: 'PaperNotes');
       }
@@ -171,5 +202,72 @@ class ReminderService {
     } catch (e) {
       debugPrint('ReminderService cancel failed: $e');
     }
+  }
+
+  void _initForegroundService() {
+    FlutterForegroundTask.init(
+      androidNotificationOptions: AndroidNotificationOptions(
+        channelId: 'pinned_reminders',
+        channelName: 'Pinned reminders',
+        channelDescription: 'Locked note reminders kept in the status bar',
+        onlyAlertOnce: true,
+      ),
+      iosNotificationOptions: const IOSNotificationOptions(),
+      foregroundTaskOptions: ForegroundTaskOptions(
+        // Notification-only: no periodic event, but keep it alive across reboots
+        // and updates so a pinned reminder stays put until the user clears it.
+        eventAction: ForegroundTaskEventAction.nothing(),
+        autoRunOnBoot: true,
+        autoRunOnMyPackageReplaced: true,
+        allowWakeLock: false,
+        allowWifiLock: false,
+      ),
+    );
+  }
+
+  /// Android: reconcile the locked-reminder foreground service to [pinned].
+  /// Empty list stops the service; otherwise the service runs with one
+  /// consolidated, un-swipeable notification. No-op off Android.
+  Future<void> syncPinned(List<Note> pinned) async {
+    if (!_ready || !usesForegroundPinned) return;
+    try {
+      if (pinned.isEmpty) {
+        if (await FlutterForegroundTask.isRunningService) {
+          await FlutterForegroundTask.stopService();
+        }
+        return;
+      }
+      // Clear any legacy per-note ongoing notifications shown by older builds
+      // so they don't linger alongside the service notification.
+      for (final n in pinned) {
+        await _fln.cancel(id: notifId(n.id));
+      }
+      final (title, text) = _pinnedContent(pinned);
+      if (await FlutterForegroundTask.isRunningService) {
+        await FlutterForegroundTask.updateService(
+          notificationTitle: title,
+          notificationText: text,
+        );
+      } else {
+        await FlutterForegroundTask.startService(
+          serviceTypes: [ForegroundServiceTypes.specialUse],
+          notificationTitle: title,
+          notificationText: text,
+          callback: pinnedReminderCallback,
+        );
+      }
+    } catch (e) {
+      debugPrint('ReminderService syncPinned failed: $e');
+    }
+  }
+
+  /// Title/body for the consolidated pinned-reminder notification.
+  (String, String) _pinnedContent(List<Note> pinned) {
+    if (pinned.length == 1) {
+      final n = pinned.first;
+      return (_title(n), _body(n));
+    }
+    final titles = pinned.map(_title).take(5).join(', ');
+    return ('${pinned.length} pinned reminders', titles);
   }
 }

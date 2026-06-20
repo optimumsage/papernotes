@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/note_sort.dart';
+import '../core/platform.dart';
 import '../data/local/database.dart';
 import '../data/models/folder.dart';
 import '../data/models/note.dart';
@@ -17,6 +18,7 @@ import '../data/sync/drive_auth.dart';
 import '../data/sync/drive_client.dart';
 import '../data/sync/sync_engine.dart';
 import '../data/update_service.dart';
+import '../desktop/auto_start.dart';
 
 /// Overridden in main() with the real instances created during bootstrap.
 final prefsProvider = Provider<SharedPreferences>((_) {
@@ -258,6 +260,16 @@ class SettingsController extends Notifier<AppSettings> {
   Future<void> setPreviewLines(int value) async {
     await _service.setPreviewLines(value);
     state = state.copyWith(previewLines: value);
+  }
+
+  /// Desktop only: toggle launching the app at login. Applies it to the OS
+  /// (best-effort — never throws) and persists the preference.
+  Future<void> setLaunchAtStartup(bool value) async {
+    if (isDesktopPlatform) {
+      await AutoStartService.instance.setEnabled(value);
+    }
+    await _service.setLaunchAtStartup(value);
+    state = state.copyWith(launchAtStartup: value);
   }
 
   Future<void> setCredentials(String clientId, String clientSecret) async {
