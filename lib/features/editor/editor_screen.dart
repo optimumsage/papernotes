@@ -39,6 +39,10 @@ class EditorScreen extends ConsumerStatefulWidget {
 }
 
 class _EditorScreenState extends ConsumerState<EditorScreen> {
+  /// Line-height multiplier for the note body. Shared by the body text style
+  /// and the ruled-line painter so the rules stay aligned with each text row.
+  static const _bodyLineHeightFactor = 1.4;
+
   late Note _note;
   bool _loaded = false;
   bool _showTitle = false;
@@ -454,22 +458,45 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
   }
 
   Widget _bodyField(ThemeData theme, Color onBg, bool ruled) {
-    final baseStyle =
-        theme.textTheme.bodyLarge!.copyWith(color: onBg, height: 1.4);
+    final baseStyle = theme.textTheme.bodyLarge!
+        .copyWith(color: onBg, height: _bodyLineHeightFactor);
 
     // DefaultTextStyle drives FleatherEditor's base paragraph style (it derives
     // its theme from the ambient text style), so this sets the body font/colour.
-    final editor = DefaultTextStyle(
-      style: baseStyle,
-      child: FleatherEditor(
-        controller: _body!,
-        focusNode: _bodyFocus,
-        scrollable: false,
-        autofocus: widget.isNew,
-        padding: EdgeInsets.zero,
-        spellCheckConfiguration: _spellCheck,
-      ),
+    final fleatherEditor = FleatherEditor(
+      controller: _body!,
+      focusNode: _bodyFocus,
+      scrollable: false,
+      autofocus: widget.isNew,
+      padding: EdgeInsets.zero,
+      spellCheckConfiguration: _spellCheck,
     );
+
+    // On ruled paper the text must sit on a uniform line grid. Fleather's
+    // fallback theme otherwise forces paragraph line-height to 1.3 (not our
+    // 1.4) and wraps every paragraph in VerticalSpacing(top: 6, bottom: 10) —
+    // so text starts 6px low and each paragraph break drifts ~16px off the
+    // grid, overlapping the rules. Override the paragraph block to use our line
+    // height with no extra spacing so paragraphs land exactly on the grid the
+    // painter draws. (Plain notes keep Fleather's default comfortable spacing.)
+    final Widget body = ruled
+        ? Builder(
+            builder: (context) {
+              final base = FleatherThemeData.fallback(context);
+              return FleatherTheme(
+                data: base.copyWith(
+                  paragraph: TextBlockTheme(
+                    style: baseStyle,
+                    spacing: const VerticalSpacing.zero(),
+                  ),
+                ),
+                child: fleatherEditor,
+              );
+            },
+          )
+        : fleatherEditor;
+
+    final editor = DefaultTextStyle(style: baseStyle, child: body);
 
     // "Note" placeholder, shown only while the document is empty.
     final hint = Positioned(
@@ -496,7 +523,8 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     // line height (font size × line-height multiplier × the user's text scale).
     // The non-positioned editor drives the Stack's height, so lines fill it.
     final fontSize = theme.textTheme.bodyLarge?.fontSize ?? 16;
-    final lineHeight = MediaQuery.textScalerOf(context).scale(fontSize) * 1.4;
+    final lineHeight = MediaQuery.textScalerOf(context).scale(fontSize) *
+        _bodyLineHeightFactor;
     return Stack(
       children: [
         Positioned.fill(
