@@ -516,32 +516,38 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     misspelledTextStyle: TextField.materialMisspelledTextStyle,
   );
 
-  /// Slim formatting toolbar pinned above the keyboard. Wrapped in
-  /// [ExcludeFocus] so tapping a button never steals focus from the body
-  /// (which would drop the selection and dismiss the keyboard).
+  /// Slim formatting toolbar pinned above the keyboard.
+  ///
+  /// [TextFieldTapRegion] marks the bar as belonging to the body field, so
+  /// tapping a button does NOT blur the field (which would hide the toolbar and
+  /// cancel the press). [ExcludeFocus] additionally stops the buttons from
+  /// grabbing keyboard focus. Together the field stays focused and the
+  /// selection survives, so [_wrapSelection] sees the real selection.
   Widget _formattingBar(Color onBg, Color bg) {
-    return ExcludeFocus(
-      child: Material(
-        color: bg,
-        child: Container(
-          decoration: BoxDecoration(
-            border: Border(
-              top: BorderSide(color: onBg.withValues(alpha: 0.12)),
+    return TextFieldTapRegion(
+      child: ExcludeFocus(
+        child: Material(
+          color: bg,
+          child: Container(
+            decoration: BoxDecoration(
+              border: Border(
+                top: BorderSide(color: onBg.withValues(alpha: 0.12)),
+              ),
             ),
-          ),
-          child: SafeArea(
-            top: false,
-            child: Row(
-              children: [
-                _fmtButton(onBg, Icons.format_bold, 'Bold',
-                    () => _wrapSelection('**')),
-                _fmtButton(onBg, Icons.format_italic, 'Italic',
-                    () => _wrapSelection('*')),
-                _fmtButton(onBg, Icons.format_underlined, 'Underline',
-                    () => _wrapSelection('_')),
-                _fmtButton(onBg, Icons.format_list_bulleted, 'Bullet',
-                    _toggleBulletLine),
-              ],
+            child: SafeArea(
+              top: false,
+              child: Row(
+                children: [
+                  _fmtButton(onBg, Icons.format_bold, 'Bold',
+                      () => _wrapSelection('**')),
+                  _fmtButton(onBg, Icons.format_italic, 'Italic',
+                      () => _wrapSelection('*')),
+                  _fmtButton(onBg, Icons.format_underlined, 'Underline',
+                      () => _wrapSelection('_')),
+                  _fmtButton(onBg, Icons.format_list_bulleted, 'Bullet',
+                      _toggleBulletLine),
+                ],
+              ),
             ),
           ),
         ),

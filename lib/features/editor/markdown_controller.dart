@@ -15,15 +15,16 @@ class MarkdownEditingController extends TextEditingController {
     TextStyle? style,
     required bool withComposing,
   }) {
-    // While the IME is actively composing (e.g. autocorrect / CJK input), defer
-    // to the default rendering so the composing underline isn't disturbed.
-    if (withComposing && value.isComposingRangeValid) {
-      return super.buildTextSpan(
-          context: context, style: style, withComposing: withComposing);
-    }
+    // Always render the styled markdown. We intentionally ignore the IME
+    // composing range: on Android, Gboard keeps a composing region active on
+    // the current word almost continuously, so honoring it here would suppress
+    // styling nearly all the time. The styled spans preserve every character
+    // (markers stay, `- ` → `•` is a 1:1 swap) so the caret/selection still map
+    // 1:1 to the underlying text; only the transient composing underline is
+    // dropped, which is purely cosmetic.
     final base = style ?? const TextStyle();
     final markerColor =
-        (base.color ?? const Color(0xFF000000)).withValues(alpha: 0.35);
+        (base.color ?? const Color(0xFF000000)).withValues(alpha: 0.4);
     return buildMarkdownSpan(text, base, markerColor: markerColor);
   }
 }
