@@ -1,5 +1,6 @@
 import 'package:uuid/uuid.dart';
 
+import '../../core/note_body.dart';
 import '../local/database.dart';
 import '../models/checklist_item.dart';
 import '../models/note.dart';
@@ -178,7 +179,7 @@ List<Note> searchNotes(List<Note> notes, String query) {
   if (q.isEmpty) return notes;
   return notes.where((n) {
     if ((n.title ?? '').toLowerCase().contains(q)) return true;
-    if ((n.body ?? '').toLowerCase().contains(q)) return true;
+    if (plainTextFromBody(n.body).toLowerCase().contains(q)) return true;
     return n.items.any((i) => i.text.toLowerCase().contains(q));
   }).toList();
 }

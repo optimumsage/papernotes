@@ -2,7 +2,7 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../data/models/note.dart';
-import 'note_markdown.dart';
+import 'note_body.dart';
 
 /// Render a note as plain text suitable for sharing or copying. Includes the
 /// title (when set) and either the body or the checklist items (`☐`/`☑`).
@@ -16,7 +16,7 @@ String noteToShareText(Note note) {
       buffer.writeln('${item.checked ? '☑' : '☐'} $text');
     }
   } else {
-    final body = stripMarkdown((note.body ?? '').trim());
+    final body = plainTextFromBody(note.body).trim();
     if (body.isNotEmpty) buffer.writeln(body);
   }
   final text = buffer.toString().trim();

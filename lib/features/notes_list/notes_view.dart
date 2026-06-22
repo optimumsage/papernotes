@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/note_body.dart';
 import '../../core/note_sort.dart';
 import '../../data/models/note.dart';
 import '../../providers/providers.dart';
@@ -113,9 +114,12 @@ class _DragFeedback extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final preview = plainTextFromBody(note.body).trim();
     final label = note.hasTitle
         ? note.title!.trim()
-        : (note.isChecklist ? 'Checklist' : (note.body ?? 'Note').trim());
+        : (note.isChecklist
+            ? 'Checklist'
+            : (preview.isEmpty ? 'Note' : preview));
     return Material(
       color: Colors.transparent,
       child: Container(

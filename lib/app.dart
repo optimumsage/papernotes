@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:fleather/fleather.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -100,6 +101,8 @@ class _PaperNotesAppState extends ConsumerState<PaperNotesApp>
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
       themeMode: themeMode,
+      // Required by the Fleather rich-text editor (selection menu, tooltips).
+      localizationsDelegates: const [FleatherLocalizations.delegate],
       routerConfig: appRouter,
       builder: (context, child) {
         // Apply the user's font-size preference app-wide.

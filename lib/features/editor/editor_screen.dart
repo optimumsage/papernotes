@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:fleather/fleather.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -13,7 +14,7 @@ import '../../providers/providers.dart';
 import '../reminders/reminder_sheet.dart';
 import 'checklist_body.dart';
 import 'color_picker.dart';
-import 'markdown_controller.dart';
+import 'note_document.dart';
 import 'ruled_lines_painter.dart';
 
 class EditorScreen extends ConsumerStatefulWidget {
@@ -43,9 +44,14 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
   bool _showTitle = false;
 
   final _titleController = TextEditingController();
-  final _bodyController = MarkdownEditingController();
   final _bodyFocus = FocusNode();
+  FleatherController? _body;
   Timer? _debounce;
+
+  /// Serialized document as last loaded/saved. Lets us tell a real content edit
+  /// (mark dirty) from a selection-only change (ignore), so merely moving the
+  /// caret never bumps `updatedAt`.
+  String _savedBody = '';
 
   /// True once the user actually changes something. Prevents merely opening a
   /// note (then leaving) from bumping its `updatedAt` / re-syncing it.
@@ -81,7 +87,10 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
       _showTitle = _note.hasTitle || _note.isChecklist;
     }
     _titleController.text = _note.title ?? '';
-    _bodyController.text = _note.body ?? '';
+    final controller = FleatherController(document: documentFromBody(_note.body));
+    _savedBody = bodyFromDocument(controller.document) ?? '';
+    controller.addListener(_onBodyChanged);
+    _body = controller;
     setState(() => _loaded = true);
   }
 
@@ -91,17 +100,31 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     _bodyFocus.removeListener(_onBodyFocusChange);
     _bodyFocus.dispose();
     _titleController.dispose();
-    _bodyController.dispose();
+    _body?.removeListener(_onBodyChanged);
+    _body?.dispose();
     super.dispose();
   }
 
   // ---- persistence ----
 
+  String _currentBody() => bodyFromDocument(_body!.document) ?? '';
+
+  /// Fires on every document change (content or selection). Selection-only
+  /// changes serialize identically, so they don't mark the note dirty.
+  void _onBodyChanged() {
+    final body = _currentBody();
+    if (body == _savedBody) return;
+    _dirty = true;
+    _note = _note.copyWith(title: _titleController.text, body: body);
+    _debounce?.cancel();
+    _debounce = Timer(AppConfig.autosaveDebounce, _flush);
+  }
+
   void _scheduleSave() {
     _dirty = true;
     _note = _note.copyWith(
       title: _titleController.text,
-      body: _bodyController.text,
+      body: _currentBody(),
     );
     _debounce?.cancel();
     _debounce = Timer(AppConfig.autosaveDebounce, _flush);
@@ -111,11 +134,12 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     _debounce?.cancel();
     _note = _note.copyWith(
       title: _titleController.text,
-      body: _bodyController.text,
+      body: _currentBody(),
     );
     if (_shouldDiscard) return; // don't persist invalid/empty drafts
     if (!_dirty) return; // nothing changed — don't bump updatedAt
     await ref.read(noteRepositoryProvider).save(_note);
+    _savedBody = _note.body ?? '';
   }
 
   /// A new note with no content, or any checklist left without its required
@@ -130,7 +154,7 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     _debounce?.cancel();
     _note = _note.copyWith(
       title: _titleController.text,
-      body: _bodyController.text,
+      body: _currentBody(),
     );
     if (_shouldDiscard) {
       await ref.read(noteRepositoryProvider).discardDraft(_note.id);
@@ -148,57 +172,15 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
 
   ChecklistItem _newItem() => ref.read(noteRepositoryProvider).newItem();
 
-  // ---- rich-text formatting (lightweight markdown) ----
+  // ---- rich-text formatting ----
 
-  /// Wraps the current selection in [marker] (e.g. `**`). With no selection,
-  /// inserts an empty marker pair and parks the caret between them.
-  void _wrapSelection(String marker) {
-    final value = _bodyController.value;
-    final sel = value.selection;
-    if (!sel.isValid) return;
-    final text = value.text;
-    final selected = text.substring(sel.start, sel.end);
-    final newText =
-        text.replaceRange(sel.start, sel.end, '$marker$selected$marker');
-    final newSelection = selected.isEmpty
-        ? TextSelection.collapsed(offset: sel.start + marker.length)
-        : TextSelection(
-            baseOffset: sel.start + marker.length,
-            extentOffset: sel.end + marker.length,
-          );
-    _bodyController.value = value.copyWith(
-      text: newText,
-      selection: newSelection,
-      composing: TextRange.empty,
-    );
-    _scheduleSave();
-    _bodyFocus.requestFocus();
-  }
+  bool _hasAttr(ParchmentAttribute attr) =>
+      _body!.getSelectionStyle().containsSame(attr);
 
-  /// Toggles a `- ` bullet prefix on the line containing the caret.
-  void _toggleBulletLine() {
-    final value = _bodyController.value;
-    final sel = value.selection;
-    if (!sel.isValid) return;
-    final text = value.text;
-    final lineStart = text.lastIndexOf('\n', sel.start - 1) + 1;
-    final bulleted = text.startsWith('- ', lineStart);
-    final String newText;
-    final int delta;
-    if (bulleted) {
-      newText = text.replaceRange(lineStart, lineStart + 2, '');
-      delta = -2;
-    } else {
-      newText = text.replaceRange(lineStart, lineStart, '- ');
-      delta = 2;
-    }
-    final offset = (sel.start + delta).clamp(lineStart, newText.length);
-    _bodyController.value = value.copyWith(
-      text: newText,
-      selection: TextSelection.collapsed(offset: offset),
-      composing: TextRange.empty,
-    );
-    _scheduleSave();
+  /// Toggles an inline/block attribute on the current selection (or, when the
+  /// selection is collapsed, on the text typed next).
+  void _toggleAttr(ParchmentAttribute attr) {
+    _body!.formatSelection(_hasAttr(attr) ? attr.unset : attr);
     _bodyFocus.requestFocus();
   }
 
@@ -472,27 +454,47 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
   }
 
   Widget _bodyField(ThemeData theme, Color onBg, bool ruled) {
-    final field = TextField(
-      controller: _bodyController,
-      focusNode: _bodyFocus,
-      onChanged: (_) => _scheduleSave(),
-      maxLines: null,
-      autofocus: widget.isNew,
-      textCapitalization: TextCapitalization.sentences,
-      spellCheckConfiguration: _spellCheck,
-      style: theme.textTheme.bodyLarge?.copyWith(color: onBg, height: 1.4),
-      decoration: InputDecoration(
-        hintText: 'Note',
-        hintStyle: theme.textTheme.bodyLarge
-            ?.copyWith(color: onBg.withValues(alpha: 0.4)),
+    final baseStyle =
+        theme.textTheme.bodyLarge!.copyWith(color: onBg, height: 1.4);
+
+    // DefaultTextStyle drives FleatherEditor's base paragraph style (it derives
+    // its theme from the ambient text style), so this sets the body font/colour.
+    final editor = DefaultTextStyle(
+      style: baseStyle,
+      child: FleatherEditor(
+        controller: _body!,
+        focusNode: _bodyFocus,
+        scrollable: false,
+        autofocus: widget.isNew,
+        padding: EdgeInsets.zero,
+        spellCheckConfiguration: _spellCheck,
       ),
     );
-    if (!ruled) return field;
+
+    // "Note" placeholder, shown only while the document is empty.
+    final hint = Positioned(
+      left: 0,
+      top: 0,
+      child: ListenableBuilder(
+        listenable: _body!,
+        builder: (context, _) {
+          if (_body!.document.toPlainText().trim().isNotEmpty) {
+            return const SizedBox.shrink();
+          }
+          return IgnorePointer(
+            child: Text('Note',
+                style: baseStyle.copyWith(color: onBg.withValues(alpha: 0.4))),
+          );
+        },
+      ),
+    );
+
+    final stacked = Stack(children: [editor, hint]);
+    if (!ruled) return stacked;
 
     // Ruled "paper" lines behind the text. Spacing tracks the body's rendered
-    // line height (font size × line-height multiplier × the user's text scale)
-    // so the lines sit under each row. The non-positioned TextField drives the
-    // Stack's height, so the lines cover the full body.
+    // line height (font size × line-height multiplier × the user's text scale).
+    // The non-positioned editor drives the Stack's height, so lines fill it.
     final fontSize = theme.textTheme.bodyLarge?.fontSize ?? 16;
     final lineHeight = MediaQuery.textScalerOf(context).scale(fontSize) * 1.4;
     return Stack(
@@ -505,24 +507,29 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
             ),
           ),
         ),
-        field,
+        stacked,
       ],
     );
   }
 
-  /// Native OS spell-check (red squiggles + suggestions). Active on Android/iOS;
-  /// a no-op on platforms without a default spell-check service.
-  static final SpellCheckConfiguration _spellCheck = SpellCheckConfiguration(
-    misspelledTextStyle: TextField.materialMisspelledTextStyle,
-  );
+  /// Native OS spell-check (red squiggles + suggestions), enabled only where the
+  /// platform actually provides a spell-check service (Android/iOS). On desktop
+  /// there is no service, so we pass null (disabled) rather than trip
+  /// EditableText's "no spell check service" error.
+  SpellCheckConfiguration? get _spellCheck =>
+      WidgetsBinding.instance.platformDispatcher.nativeSpellCheckServiceDefined
+          ? SpellCheckConfiguration(
+              misspelledTextStyle: TextField.materialMisspelledTextStyle,
+            )
+          : null;
 
   /// Slim formatting toolbar pinned above the keyboard.
   ///
   /// [TextFieldTapRegion] marks the bar as belonging to the body field, so
-  /// tapping a button does NOT blur the field (which would hide the toolbar and
-  /// cancel the press). [ExcludeFocus] additionally stops the buttons from
-  /// grabbing keyboard focus. Together the field stays focused and the
-  /// selection survives, so [_wrapSelection] sees the real selection.
+  /// tapping a button does NOT blur the editor. [ExcludeFocus] additionally
+  /// stops the buttons from grabbing keyboard focus. The [ListenableBuilder]
+  /// rebuilds the button states so active formatting is highlighted as the
+  /// selection moves.
   Widget _formattingBar(Color onBg, Color bg) {
     return TextFieldTapRegion(
       child: ExcludeFocus(
@@ -536,17 +543,24 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
             ),
             child: SafeArea(
               top: false,
-              child: Row(
-                children: [
-                  _fmtButton(onBg, Icons.format_bold, 'Bold',
-                      () => _wrapSelection('**')),
-                  _fmtButton(onBg, Icons.format_italic, 'Italic',
-                      () => _wrapSelection('*')),
-                  _fmtButton(onBg, Icons.format_underlined, 'Underline',
-                      () => _wrapSelection('_')),
-                  _fmtButton(onBg, Icons.format_list_bulleted, 'Bullet',
-                      _toggleBulletLine),
-                ],
+              child: ListenableBuilder(
+                listenable: _body!,
+                builder: (context, _) => Row(
+                  children: [
+                    _fmtButton(onBg, Icons.format_bold, 'Bold',
+                        _hasAttr(ParchmentAttribute.bold),
+                        () => _toggleAttr(ParchmentAttribute.bold)),
+                    _fmtButton(onBg, Icons.format_italic, 'Italic',
+                        _hasAttr(ParchmentAttribute.italic),
+                        () => _toggleAttr(ParchmentAttribute.italic)),
+                    _fmtButton(onBg, Icons.format_underlined, 'Underline',
+                        _hasAttr(ParchmentAttribute.underline),
+                        () => _toggleAttr(ParchmentAttribute.underline)),
+                    _fmtButton(onBg, Icons.format_list_bulleted, 'Bullet',
+                        _hasAttr(ParchmentAttribute.ul),
+                        () => _toggleAttr(ParchmentAttribute.ul)),
+                  ],
+                ),
               ),
             ),
           ),
@@ -559,11 +573,14 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     Color onBg,
     IconData icon,
     String tooltip,
+    bool active,
     VoidCallback onPressed,
   ) {
     return IconButton(
       tooltip: tooltip,
-      icon: Icon(icon, color: onBg.withValues(alpha: 0.8)),
+      isSelected: active,
+      icon: Icon(icon,
+          color: active ? onBg : onBg.withValues(alpha: 0.6)),
       onPressed: onPressed,
     );
   }

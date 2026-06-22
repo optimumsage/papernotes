@@ -8,6 +8,7 @@ import 'package:local_notifier/local_notifier.dart';
 import 'package:timezone/data/latest_all.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 
+import '../../core/note_body.dart';
 import '../models/note.dart';
 
 /// Foreground-service entry point for locked "pinned" reminders on Android.
@@ -127,7 +128,7 @@ class ReminderService {
           .take(3);
       return texts.isEmpty ? 'Checklist reminder' : texts.join(', ');
     }
-    final body = (note.body ?? '').trim();
+    final body = plainTextFromBody(note.body).trim();
     return body.isEmpty ? 'Note reminder' : body;
   }
 
