@@ -23,8 +23,11 @@ class RuledLinesPainter extends CustomPainter {
     final paint = Paint()
       ..color = color
       ..strokeWidth = 1;
+    // The +0.5 tolerance ensures the rule under the final line still draws when
+    // the content height is an exact multiple of [lineHeight] (floating-point
+    // equality would otherwise drop it).
     var y = topPadding + lineHeight;
-    while (y <= size.height) {
+    while (y <= size.height + 0.5) {
       canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
       y += lineHeight;
     }

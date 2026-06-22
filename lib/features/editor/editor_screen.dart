@@ -519,12 +519,13 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     final stacked = Stack(children: [editor, hint]);
     if (!ruled) return stacked;
 
-    // Ruled "paper" lines behind the text. Spacing tracks the body's rendered
-    // line height (font size × line-height multiplier × the user's text scale).
+    // Ruled "paper" lines behind the text. Spacing must equal the editor's
+    // *actual* rendered line height, which is not simply font size × height —
+    // the font's metrics and rounding make it differ (e.g. 22.0, not 16×1.4 =
+    // 22.4). Measuring it the way Fleather lays out a line keeps the rules on
+    // the exact grid the text uses, so they never drift across many lines.
     // The non-positioned editor drives the Stack's height, so lines fill it.
-    final fontSize = theme.textTheme.bodyLarge?.fontSize ?? 16;
-    final lineHeight = MediaQuery.textScalerOf(context).scale(fontSize) *
-        _bodyLineHeightFactor;
+    final lineHeight = _measuredLineHeight(context, baseStyle);
     return Stack(
       children: [
         Positioned.fill(
@@ -538,6 +539,24 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
         stacked,
       ],
     );
+  }
+
+  /// The exact rendered height of one body line, measured the way Fleather lays
+  /// out a paragraph: a strut with `forceStrutHeight` plus the ambient text
+  /// scaler (see text_line.dart in the fleather package). Computing this rather
+  /// than `fontSize × height` is what keeps the ruled lines from drifting — the
+  /// naive product overestimates the real metric by a fraction of a pixel per
+  /// line, which accumulates into visible overlap further down the page.
+  double _measuredLineHeight(BuildContext context, TextStyle style) {
+    final painter = TextPainter(
+      text: TextSpan(text: 'Ag', style: style),
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+      strutStyle: StrutStyle.fromTextStyle(style, forceStrutHeight: true),
+    )..layout();
+    final height = painter.height;
+    painter.dispose();
+    return height;
   }
 
   /// Native OS spell-check (red squiggles + suggestions), enabled only where the

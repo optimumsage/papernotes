@@ -7,6 +7,7 @@ import 'package:papernote/data/local/database.dart';
 import 'package:papernote/data/models/note.dart';
 import 'package:papernote/data/settings_service.dart';
 import 'package:papernote/features/editor/editor_screen.dart';
+import 'package:papernote/features/editor/ruled_lines_painter.dart';
 import 'package:papernote/providers/providers.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -74,5 +75,50 @@ void main() {
     expect(find.byType(FleatherEditor), findsOneWidget);
     expect(find.text('Note'), findsNothing); // not empty → no placeholder
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('ruled-paper line spacing matches the editor line height',
+      (tester) async {
+    // A multi-paragraph body: any drift between the painter's spacing and the
+    // text's real line height accumulates and is what caused rules to overlap
+    // text further down the note.
+    const delta = '[{"insert":"line one\\nline two\\nline three\\n'
+        'line four\\nline five\\nline six\\n"}]';
+    await db.upsertNote(
+      Note(id: 'n3', type: NoteType.note, body: delta, createdAt: 1, updatedAt: 1),
+      dirty: false,
+    );
+
+    await tester.pumpWidget(_harness(
+      db,
+      const EditorScreen(noteId: 'n3', isNew: false, type: NoteType.note),
+    ));
+    await tester.pumpAndSettle();
+
+    // The painter's configured line spacing.
+    final ruled = tester
+        .widgetList<CustomPaint>(find.byType(CustomPaint))
+        .map((w) => w.painter)
+        .whereType<RuledLinesPainter>()
+        .single;
+
+    // The editor's actual per-line height: vertical gap between consecutive
+    // rendered text lines (one RichText per Fleather line).
+    final tops = <double>[];
+    for (final e in find
+        .descendant(
+            of: find.byType(FleatherEditor), matching: find.byType(RichText))
+        .evaluate()) {
+      final ro = e.renderObject;
+      if (ro is RenderBox && ro.hasSize) {
+        tops.add(ro.localToGlobal(Offset.zero).dy);
+      }
+    }
+    tops.sort();
+    expect(tops.length, greaterThanOrEqualTo(3));
+    for (var i = 1; i < tops.length; i++) {
+      // Each line advances by exactly the painter's spacing (no drift).
+      expect(tops[i] - tops[i - 1], closeTo(ruled.lineHeight, 0.01));
+    }
   });
 }
