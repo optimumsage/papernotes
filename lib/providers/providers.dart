@@ -262,6 +262,11 @@ class SettingsController extends Notifier<AppSettings> {
     state = state.copyWith(previewLines: value);
   }
 
+  Future<void> setRuledLines(bool value) async {
+    await _service.setRuledLines(value);
+    state = state.copyWith(ruledLines: value);
+  }
+
   /// Desktop only: toggle launching the app at login. Applies it to the OS
   /// (best-effort — never throws) and persists the preference.
   Future<void> setLaunchAtStartup(bool value) async {

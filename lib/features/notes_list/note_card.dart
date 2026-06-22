@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/date_format.dart';
 import '../../core/note_colors.dart';
+import '../../core/note_markdown.dart';
 import '../../data/models/note.dart';
 
 /// A single Keep-style card in the notes grid. Shows the title only when set,
@@ -141,7 +142,7 @@ class NoteCard extends StatelessWidget {
     }
     if (body.isEmpty) return const SizedBox.shrink();
     return Text(
-      body,
+      stripMarkdown(body),
       maxLines: maxPreviewLines,
       overflow: TextOverflow.ellipsis,
       style: theme.textTheme.bodyMedium

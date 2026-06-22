@@ -138,6 +138,9 @@ class _ChecklistBodyState extends State<ChecklistBody> {
               onChanged: (v) => _setText(item.id, v),
               onSubmitted: (_) => _add(afterId: item.id),
               textCapitalization: TextCapitalization.sentences,
+              spellCheckConfiguration: SpellCheckConfiguration(
+                misspelledTextStyle: TextField.materialMisspelledTextStyle,
+              ),
               style: TextStyle(
                 color: widget.onBg
                     .withValues(alpha: item.checked ? 0.5 : 0.95),

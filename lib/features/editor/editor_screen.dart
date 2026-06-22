@@ -13,6 +13,8 @@ import '../../providers/providers.dart';
 import '../reminders/reminder_sheet.dart';
 import 'checklist_body.dart';
 import 'color_picker.dart';
+import 'markdown_controller.dart';
+import 'ruled_lines_painter.dart';
 
 class EditorScreen extends ConsumerStatefulWidget {
   const EditorScreen({
@@ -41,7 +43,8 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
   bool _showTitle = false;
 
   final _titleController = TextEditingController();
-  final _bodyController = TextEditingController();
+  final _bodyController = MarkdownEditingController();
+  final _bodyFocus = FocusNode();
   Timer? _debounce;
 
   /// True once the user actually changes something. Prevents merely opening a
@@ -51,7 +54,13 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
   @override
   void initState() {
     super.initState();
+    // Show the formatting toolbar only while the body is focused.
+    _bodyFocus.addListener(_onBodyFocusChange);
     _init();
+  }
+
+  void _onBodyFocusChange() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _init() async {
@@ -79,6 +88,8 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
   @override
   void dispose() {
     _debounce?.cancel();
+    _bodyFocus.removeListener(_onBodyFocusChange);
+    _bodyFocus.dispose();
     _titleController.dispose();
     _bodyController.dispose();
     super.dispose();
@@ -136,6 +147,60 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
   }
 
   ChecklistItem _newItem() => ref.read(noteRepositoryProvider).newItem();
+
+  // ---- rich-text formatting (lightweight markdown) ----
+
+  /// Wraps the current selection in [marker] (e.g. `**`). With no selection,
+  /// inserts an empty marker pair and parks the caret between them.
+  void _wrapSelection(String marker) {
+    final value = _bodyController.value;
+    final sel = value.selection;
+    if (!sel.isValid) return;
+    final text = value.text;
+    final selected = text.substring(sel.start, sel.end);
+    final newText =
+        text.replaceRange(sel.start, sel.end, '$marker$selected$marker');
+    final newSelection = selected.isEmpty
+        ? TextSelection.collapsed(offset: sel.start + marker.length)
+        : TextSelection(
+            baseOffset: sel.start + marker.length,
+            extentOffset: sel.end + marker.length,
+          );
+    _bodyController.value = value.copyWith(
+      text: newText,
+      selection: newSelection,
+      composing: TextRange.empty,
+    );
+    _scheduleSave();
+    _bodyFocus.requestFocus();
+  }
+
+  /// Toggles a `- ` bullet prefix on the line containing the caret.
+  void _toggleBulletLine() {
+    final value = _bodyController.value;
+    final sel = value.selection;
+    if (!sel.isValid) return;
+    final text = value.text;
+    final lineStart = text.lastIndexOf('\n', sel.start - 1) + 1;
+    final bulleted = text.startsWith('- ', lineStart);
+    final String newText;
+    final int delta;
+    if (bulleted) {
+      newText = text.replaceRange(lineStart, lineStart + 2, '');
+      delta = -2;
+    } else {
+      newText = text.replaceRange(lineStart, lineStart, '- ');
+      delta = 2;
+    }
+    final offset = (sel.start + delta).clamp(lineStart, newText.length);
+    _bodyController.value = value.copyWith(
+      text: newText,
+      selection: TextSelection.collapsed(offset: offset),
+      composing: TextRange.empty,
+    );
+    _scheduleSave();
+    _bodyFocus.requestFocus();
+  }
 
   // ---- menu actions ----
 
@@ -224,6 +289,7 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     final onBg = ThemeData.estimateBrightnessForColor(bg) == Brightness.dark
         ? Colors.white
         : const Color(0xFF1E1E22);
+    final ruled = ref.watch(settingsControllerProvider).ruledLines;
 
     return PopScope(
       canPop: false,
@@ -340,21 +406,30 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
                 ),
               ],
             ),
-            body: ListView(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 40),
+            body: Column(
               children: [
-                if (_showTitle) _titleField(theme, onBg),
-                if (_note.isChecklist)
-                  ChecklistBody(
-                    items: _note.items,
-                    onBg: onBg,
-                    onChanged: _updateItems,
-                    newItem: _newItem,
-                  )
-                else
-                  _bodyField(theme, onBg),
-                const SizedBox(height: 24),
-                _metadata(theme, onBg),
+                Expanded(
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 40),
+                    children: [
+                      if (_showTitle) _titleField(theme, onBg),
+                      if (_note.isChecklist)
+                        ChecklistBody(
+                          items: _note.items,
+                          onBg: onBg,
+                          onChanged: _updateItems,
+                          newItem: _newItem,
+                        )
+                      else
+                        _bodyField(theme, onBg, ruled),
+                      const SizedBox(height: 24),
+                      _metadata(theme, onBg),
+                    ],
+                  ),
+                ),
+                // Formatting toolbar — notes only, shown while the body is focused.
+                if (!_note.isChecklist && _bodyFocus.hasFocus)
+                  _formattingBar(onBg, bg),
               ],
             ),
           ),
@@ -380,6 +455,7 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
         controller: _titleController,
         onChanged: (_) => _scheduleSave(),
         textCapitalization: TextCapitalization.sentences,
+        spellCheckConfiguration: _spellCheck,
         style: theme.textTheme.headlineSmall
             ?.copyWith(color: onBg, fontWeight: FontWeight.w700),
         decoration: InputDecoration(
@@ -395,19 +471,94 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     );
   }
 
-  Widget _bodyField(ThemeData theme, Color onBg) {
-    return TextField(
+  Widget _bodyField(ThemeData theme, Color onBg, bool ruled) {
+    final field = TextField(
       controller: _bodyController,
+      focusNode: _bodyFocus,
       onChanged: (_) => _scheduleSave(),
       maxLines: null,
       autofocus: widget.isNew,
       textCapitalization: TextCapitalization.sentences,
+      spellCheckConfiguration: _spellCheck,
       style: theme.textTheme.bodyLarge?.copyWith(color: onBg, height: 1.4),
       decoration: InputDecoration(
         hintText: 'Note',
         hintStyle: theme.textTheme.bodyLarge
             ?.copyWith(color: onBg.withValues(alpha: 0.4)),
       ),
+    );
+    if (!ruled) return field;
+
+    // Ruled "paper" lines behind the text. Spacing tracks the body's rendered
+    // line height (font size × line-height multiplier × the user's text scale)
+    // so the lines sit under each row. The non-positioned TextField drives the
+    // Stack's height, so the lines cover the full body.
+    final fontSize = theme.textTheme.bodyLarge?.fontSize ?? 16;
+    final lineHeight = MediaQuery.textScalerOf(context).scale(fontSize) * 1.4;
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: CustomPaint(
+            painter: RuledLinesPainter(
+              lineHeight: lineHeight,
+              color: onBg.withValues(alpha: 0.12),
+            ),
+          ),
+        ),
+        field,
+      ],
+    );
+  }
+
+  /// Native OS spell-check (red squiggles + suggestions). Active on Android/iOS;
+  /// a no-op on platforms without a default spell-check service.
+  static final SpellCheckConfiguration _spellCheck = SpellCheckConfiguration(
+    misspelledTextStyle: TextField.materialMisspelledTextStyle,
+  );
+
+  /// Slim formatting toolbar pinned above the keyboard. Wrapped in
+  /// [ExcludeFocus] so tapping a button never steals focus from the body
+  /// (which would drop the selection and dismiss the keyboard).
+  Widget _formattingBar(Color onBg, Color bg) {
+    return ExcludeFocus(
+      child: Material(
+        color: bg,
+        child: Container(
+          decoration: BoxDecoration(
+            border: Border(
+              top: BorderSide(color: onBg.withValues(alpha: 0.12)),
+            ),
+          ),
+          child: SafeArea(
+            top: false,
+            child: Row(
+              children: [
+                _fmtButton(onBg, Icons.format_bold, 'Bold',
+                    () => _wrapSelection('**')),
+                _fmtButton(onBg, Icons.format_italic, 'Italic',
+                    () => _wrapSelection('*')),
+                _fmtButton(onBg, Icons.format_underlined, 'Underline',
+                    () => _wrapSelection('_')),
+                _fmtButton(onBg, Icons.format_list_bulleted, 'Bullet',
+                    _toggleBulletLine),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _fmtButton(
+    Color onBg,
+    IconData icon,
+    String tooltip,
+    VoidCallback onPressed,
+  ) {
+    return IconButton(
+      tooltip: tooltip,
+      icon: Icon(icon, color: onBg.withValues(alpha: 0.8)),
+      onPressed: onPressed,
     );
   }
 }

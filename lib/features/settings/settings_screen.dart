@@ -275,6 +275,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           v == null ? null : ctrl.setPreviewLines(v),
                     ),
                   ),
+                  const Divider(height: 28),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Ruled lines'),
+                    subtitle:
+                        const Text('Show paper-style lines behind notes'),
+                    value: settings.ruledLines,
+                    onChanged: ctrl.setRuledLines,
+                  ),
                 ],
               ),
             ),

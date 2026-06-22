@@ -19,6 +19,7 @@ class AppKeys {
   static const confirmDelete = 'confirm_delete'; // bool
   static const trashRetentionDays = 'trash_retention_days'; // int, 0 = never
   static const previewLines = 'preview_lines'; // int 1..8, body preview lines
+  static const ruledLines = 'ruled_lines'; // bool, paper lines behind note body
   static const launchAtStartup = 'launch_at_startup'; // bool, desktop only
 
   // SecureStore keys (encrypted secrets)
@@ -52,6 +53,9 @@ class AppConfig {
   static const defaultPreviewLines = 8;
   static const minPreviewLines = 1;
   static const maxPreviewLines = 8;
+
+  /// Whether note bodies show ruled "paper" lines by default.
+  static const defaultRuledLines = true;
 
   /// Selectable auto-sync intervals (minutes) and trash retention windows.
   static const autoSyncOptions = [5, 15, 30, 60];
