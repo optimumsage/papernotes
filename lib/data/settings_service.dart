@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/constants.dart';
 import '../core/note_sort.dart';
+import '../core/swipe_action.dart';
 import 'local/secure_store.dart';
 
 /// Immutable snapshot of user settings, surfaced to the UI via a provider.
@@ -27,6 +28,8 @@ class AppSettings {
   final int previewLines; // body preview lines shown on a card (1..8)
   final bool ruledLines; // show paper-style lines behind note body
   final bool launchAtStartup; // desktop: open the app at login
+  final SwipeAction leftSwipeAction; // Android: left-swipe note action
+  final SwipeAction rightSwipeAction; // Android: right-swipe note action
 
   const AppSettings({
     this.syncEnabled = false,
@@ -47,6 +50,8 @@ class AppSettings {
     this.previewLines = AppConfig.defaultPreviewLines,
     this.ruledLines = AppConfig.defaultRuledLines,
     this.launchAtStartup = false,
+    this.leftSwipeAction = AppConfig.defaultLeftSwipe,
+    this.rightSwipeAction = AppConfig.defaultRightSwipe,
   });
 
   bool get isConfigured =>
@@ -71,6 +76,8 @@ class AppSettings {
     int? previewLines,
     bool? ruledLines,
     bool? launchAtStartup,
+    SwipeAction? leftSwipeAction,
+    SwipeAction? rightSwipeAction,
   }) {
     return AppSettings(
       syncEnabled: syncEnabled ?? this.syncEnabled,
@@ -91,6 +98,8 @@ class AppSettings {
       previewLines: previewLines ?? this.previewLines,
       ruledLines: ruledLines ?? this.ruledLines,
       launchAtStartup: launchAtStartup ?? this.launchAtStartup,
+      leftSwipeAction: leftSwipeAction ?? this.leftSwipeAction,
+      rightSwipeAction: rightSwipeAction ?? this.rightSwipeAction,
     );
   }
 }
@@ -132,6 +141,12 @@ class SettingsService {
       ruledLines: _prefs.getBool(AppKeys.ruledLines) ??
           AppConfig.defaultRuledLines,
       launchAtStartup: _prefs.getBool(AppKeys.launchAtStartup) ?? false,
+      leftSwipeAction: _prefs.getString(AppKeys.leftSwipeAction) == null
+          ? AppConfig.defaultLeftSwipe
+          : swipeActionFromName(_prefs.getString(AppKeys.leftSwipeAction)),
+      rightSwipeAction: _prefs.getString(AppKeys.rightSwipeAction) == null
+          ? AppConfig.defaultRightSwipe
+          : swipeActionFromName(_prefs.getString(AppKeys.rightSwipeAction)),
     );
   }
 
@@ -176,6 +191,12 @@ class SettingsService {
 
   Future<void> setLaunchAtStartup(bool value) =>
       _prefs.setBool(AppKeys.launchAtStartup, value);
+
+  Future<void> setLeftSwipeAction(SwipeAction action) =>
+      _prefs.setString(AppKeys.leftSwipeAction, action.name);
+
+  Future<void> setRightSwipeAction(SwipeAction action) =>
+      _prefs.setString(AppKeys.rightSwipeAction, action.name);
 
   Future<void> setLastSyncedAt(int epochMs) =>
       _prefs.setInt(AppKeys.lastSyncedAt, epochMs);

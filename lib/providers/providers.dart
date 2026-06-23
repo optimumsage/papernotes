@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/note_sort.dart';
 import '../core/platform.dart';
+import '../core/swipe_action.dart';
 import '../data/local/database.dart';
 import '../data/models/folder.dart';
 import '../data/models/note.dart';
@@ -265,6 +266,16 @@ class SettingsController extends Notifier<AppSettings> {
   Future<void> setRuledLines(bool value) async {
     await _service.setRuledLines(value);
     state = state.copyWith(ruledLines: value);
+  }
+
+  Future<void> setLeftSwipeAction(SwipeAction action) async {
+    await _service.setLeftSwipeAction(action);
+    state = state.copyWith(leftSwipeAction: action);
+  }
+
+  Future<void> setRightSwipeAction(SwipeAction action) async {
+    await _service.setRightSwipeAction(action);
+    state = state.copyWith(rightSwipeAction: action);
   }
 
   /// Desktop only: toggle launching the app at login. Applies it to the OS

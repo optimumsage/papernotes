@@ -1,3 +1,5 @@
+import 'swipe_action.dart';
+
 /// App-wide constants and keys.
 class AppKeys {
   AppKeys._();
@@ -21,6 +23,8 @@ class AppKeys {
   static const previewLines = 'preview_lines'; // int 1..8, body preview lines
   static const ruledLines = 'ruled_lines'; // bool, paper lines behind note body
   static const launchAtStartup = 'launch_at_startup'; // bool, desktop only
+  static const leftSwipeAction = 'left_swipe_action'; // SwipeAction.name, Android
+  static const rightSwipeAction = 'right_swipe_action'; // SwipeAction.name, Android
 
   // SecureStore keys (encrypted secrets)
   static const driveClientSecret = 'drive_client_secret';
@@ -56,6 +60,11 @@ class AppConfig {
 
   /// Whether note bodies show ruled "paper" lines by default.
   static const defaultRuledLines = true;
+
+  /// Default Android note-swipe bindings. Right archives, left moves to Trash
+  /// (recoverable). Both reconfigurable in Settings.
+  static const defaultRightSwipe = SwipeAction.archive;
+  static const defaultLeftSwipe = SwipeAction.delete;
 
   /// Selectable auto-sync intervals (minutes) and trash retention windows.
   static const autoSyncOptions = [5, 15, 30, 60];

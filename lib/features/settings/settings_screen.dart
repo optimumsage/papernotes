@@ -5,6 +5,7 @@ import '../../core/app_snackbar.dart';
 import '../../core/constants.dart';
 import '../../core/note_colors.dart';
 import '../../core/platform.dart';
+import '../../core/swipe_action.dart';
 import '../../data/update_service.dart';
 import '../../providers/providers.dart';
 import '../editor/color_picker.dart';
@@ -289,6 +290,37 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ),
           ),
 
+          // ---- Swipe actions (Android only) ----
+          if (isAndroidPlatform) ...[
+            const SizedBox(height: 16),
+            _sectionLabel(context, 'Swipe actions'),
+            Card(
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.swipe_right_alt_outlined),
+                    title: const Text('Swipe right'),
+                    subtitle: const Text('Action when you swipe a note right'),
+                    trailing: _swipeDropdown(
+                      settings.rightSwipeAction,
+                      ctrl.setRightSwipeAction,
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: const Icon(Icons.swipe_left_alt_outlined),
+                    title: const Text('Swipe left'),
+                    subtitle: const Text('Action when you swipe a note left'),
+                    trailing: _swipeDropdown(
+                      settings.leftSwipeAction,
+                      ctrl.setLeftSwipeAction,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
           // ---- Sync ----
           const SizedBox(height: 16),
           _sectionLabel(context, 'Google Drive sync'),
@@ -487,6 +519,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           const SizedBox(height: 24),
         ],
       ),
+    );
+  }
+
+  Widget _swipeDropdown(
+      SwipeAction value, void Function(SwipeAction) onChanged) {
+    return DropdownButton<SwipeAction>(
+      value: value,
+      underline: const SizedBox.shrink(),
+      items: [
+        for (final a in SwipeAction.values)
+          DropdownMenuItem(value: a, child: Text(a.label)),
+      ],
+      onChanged: (a) => a == null ? null : onChanged(a),
     );
   }
 

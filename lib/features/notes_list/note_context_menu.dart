@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/app_snackbar.dart';
 import '../../core/note_share.dart';
+import '../../core/swipe_action.dart';
 import '../../data/models/folder.dart';
 import '../../data/models/note.dart';
 import '../../providers/providers.dart';
@@ -148,6 +149,23 @@ Future<void> showNoteActionsSheet(
   if (selected != null && context.mounted) {
     await _run(context, ref, selected, note);
   }
+}
+
+/// Runs a configurable swipe [action] (Android note swipes) by mapping it onto
+/// the same handlers the context menu uses — so undo snackbars, the reminder
+/// sheet and the folder picker all behave identically. `pin` toggles based on
+/// the note's current state; `none` is a no-op.
+Future<void> runSwipeAction(
+    BuildContext context, WidgetRef ref, SwipeAction action, Note note) async {
+  final mapped = switch (action) {
+    SwipeAction.none => null,
+    SwipeAction.delete => _NoteAction.trash,
+    SwipeAction.pin => note.pinned ? _NoteAction.unpin : _NoteAction.pin,
+    SwipeAction.archive => _NoteAction.archive,
+    SwipeAction.reminder => _NoteAction.reminder,
+    SwipeAction.moveToFolder => _NoteAction.moveToFolder,
+  };
+  if (mapped != null) await _run(context, ref, mapped, note);
 }
 
 Future<void> _run(BuildContext context, WidgetRef ref, _NoteAction action,

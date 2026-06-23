@@ -6,6 +6,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/note_body.dart';
 import '../../core/note_sort.dart';
+import '../../core/platform.dart';
+import '../../core/swipe_action.dart';
 import '../../data/models/note.dart';
 import '../../providers/providers.dart';
 import 'note_card.dart';
@@ -43,8 +45,8 @@ class NotesView extends ConsumerWidget {
       defaultTargetPlatform == TargetPlatform.macOS ||
       defaultTargetPlatform == TargetPlatform.windows;
 
-  Widget _wrap(
-      BuildContext context, WidgetRef ref, Note note, int previewLines) {
+  Widget _wrap(BuildContext context, WidgetRef ref, Note note,
+      int previewLines, SwipeAction leftSwipe, SwipeAction rightSwipe) {
     // InkWell inside NoteCard claims normal taps; secondary-tap and long-press
     // fall through to this GestureDetector and open the context menu at the
     // pointer position.
@@ -66,14 +68,93 @@ class NotesView extends ConsumerWidget {
       ),
     );
 
-    if (!_desktop || mode != NotesViewMode.active) return card;
+    // Android: configurable left/right swipe actions on active notes. Mutually
+    // exclusive with the desktop Draggable below (gated by platform).
+    if (isAndroidPlatform &&
+        mode == NotesViewMode.active &&
+        (leftSwipe != SwipeAction.none || rightSwipe != SwipeAction.none)) {
+      return RepaintBoundary(
+        child: _swipeable(context, ref, note, card, leftSwipe, rightSwipe),
+      );
+    }
 
-    return Draggable<Note>(
-      data: note,
-      dragAnchorStrategy: pointerDragAnchorStrategy,
-      feedback: _DragFeedback(note: note),
-      childWhenDragging: Opacity(opacity: 0.4, child: card),
+    if (!_desktop || mode != NotesViewMode.active) {
+      return RepaintBoundary(child: card);
+    }
+
+    return RepaintBoundary(
+      child: Draggable<Note>(
+        data: note,
+        dragAnchorStrategy: pointerDragAnchorStrategy,
+        feedback: _DragFeedback(note: note),
+        childWhenDragging: Opacity(opacity: 0.4, child: card),
+        child: card,
+      ),
+    );
+  }
+
+  /// Wraps [card] in a [Dismissible] bound to the user's swipe actions.
+  ///
+  /// `confirmDismiss` performs the action and always returns false: the card
+  /// never self-removes from the tree (which would assert before the async
+  /// Drift→stream rebuild caught up). Archive/Delete remove the note naturally
+  /// when the active-notes stream re-emits; Pin/Reminder/Move snap back.
+  Widget _swipeable(BuildContext context, WidgetRef ref, Note note, Widget card,
+      SwipeAction leftSwipe, SwipeAction rightSwipe) {
+    final hasRight = rightSwipe != SwipeAction.none;
+    final hasLeft = leftSwipe != SwipeAction.none;
+    final DismissDirection direction = hasRight && hasLeft
+        ? DismissDirection.horizontal
+        : (hasRight ? DismissDirection.startToEnd : DismissDirection.endToStart);
+
+    // A secondaryBackground requires a non-null background, so fall back to the
+    // left action's background when only the left swipe is configured.
+    final background = hasRight
+        ? _swipeBackground(context, rightSwipe, Alignment.centerLeft)
+        : (hasLeft
+            ? _swipeBackground(context, leftSwipe, Alignment.centerRight)
+            : null);
+    final secondaryBackground = hasLeft
+        ? _swipeBackground(context, leftSwipe, Alignment.centerRight)
+        : null;
+
+    return Dismissible(
+      key: ValueKey('swipe-${note.id}'),
+      direction: direction,
+      background: background,
+      secondaryBackground: secondaryBackground,
+      confirmDismiss: (dir) async {
+        final action =
+            dir == DismissDirection.startToEnd ? rightSwipe : leftSwipe;
+        await runSwipeAction(context, ref, action, note);
+        return false;
+      },
       child: card,
+    );
+  }
+
+  Widget _swipeBackground(
+      BuildContext context, SwipeAction action, Alignment alignment) {
+    final scheme = Theme.of(context).colorScheme;
+    final bg =
+        action.isDestructive ? scheme.errorContainer : scheme.primaryContainer;
+    final fg = action.isDestructive
+        ? scheme.onErrorContainer
+        : scheme.onPrimaryContainer;
+    return Container(
+      decoration:
+          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(16)),
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      alignment: alignment,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(action.icon, color: fg),
+          const SizedBox(width: 8),
+          Text(action.label,
+              style: TextStyle(color: fg, fontWeight: FontWeight.w600)),
+        ],
+      ),
     );
   }
 
@@ -83,13 +164,18 @@ class NotesView extends ConsumerWidget {
         ref.watch(settingsControllerProvider.select((s) => s.viewStyle));
     final previewLines =
         ref.watch(settingsControllerProvider.select((s) => s.previewLines));
+    final leftSwipe =
+        ref.watch(settingsControllerProvider.select((s) => s.leftSwipeAction));
+    final rightSwipe =
+        ref.watch(settingsControllerProvider.select((s) => s.rightSwipeAction));
 
     if (viewStyle == ViewStyle.list) {
       return ListView.separated(
         padding: const EdgeInsets.fromLTRB(12, 4, 12, 96),
         itemCount: notes.length,
         separatorBuilder: (_, _) => const SizedBox(height: 10),
-        itemBuilder: (context, i) => _wrap(context, ref, notes[i], previewLines),
+        itemBuilder: (context, i) =>
+            _wrap(context, ref, notes[i], previewLines, leftSwipe, rightSwipe),
       );
     }
 
@@ -101,7 +187,8 @@ class NotesView extends ConsumerWidget {
       crossAxisSpacing: 12,
       padding: const EdgeInsets.fromLTRB(12, 4, 12, 96),
       itemCount: notes.length,
-      itemBuilder: (context, i) => _wrap(context, ref, notes[i], previewLines),
+      itemBuilder: (context, i) =>
+          _wrap(context, ref, notes[i], previewLines, leftSwipe, rightSwipe),
     );
   }
 }
