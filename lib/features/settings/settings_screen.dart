@@ -194,7 +194,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        // Add the system nav-bar inset to the bottom so the last item clears
+        // it on Android's edge-to-edge display (otherwise it sits under the bar).
+        padding: EdgeInsets.fromLTRB(
+            16, 8, 16, 8 + MediaQuery.viewPaddingOf(context).bottom),
         children: [
           // ---- Appearance ----
           _sectionLabel(context, 'Appearance'),

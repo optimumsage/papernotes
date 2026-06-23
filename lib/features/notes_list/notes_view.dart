@@ -45,8 +45,9 @@ class NotesView extends ConsumerWidget {
       defaultTargetPlatform == TargetPlatform.macOS ||
       defaultTargetPlatform == TargetPlatform.windows;
 
-  Widget _wrap(BuildContext context, WidgetRef ref, Note note,
-      int previewLines, SwipeAction leftSwipe, SwipeAction rightSwipe) {
+  Widget _wrap(BuildContext context, WidgetRef ref, Note note, int previewLines,
+      SwipeAction leftSwipe, SwipeAction rightSwipe,
+      {required bool uniform}) {
     // InkWell inside NoteCard claims normal taps; secondary-tap and long-press
     // fall through to this GestureDetector and open the context menu at the
     // pointer position.
@@ -63,6 +64,7 @@ class NotesView extends ConsumerWidget {
             note: note,
             onTap: () => _onCardTap(context, ref, note),
             maxPreviewLines: previewLines,
+            uniform: uniform,
           ),
         ),
       ),
@@ -174,8 +176,9 @@ class NotesView extends ConsumerWidget {
         padding: const EdgeInsets.fromLTRB(12, 4, 12, 96),
         itemCount: notes.length,
         separatorBuilder: (_, _) => const SizedBox(height: 10),
-        itemBuilder: (context, i) =>
-            _wrap(context, ref, notes[i], previewLines, leftSwipe, rightSwipe),
+        itemBuilder: (context, i) => _wrap(
+            context, ref, notes[i], previewLines, leftSwipe, rightSwipe,
+            uniform: true),
       );
     }
 
@@ -187,8 +190,9 @@ class NotesView extends ConsumerWidget {
       crossAxisSpacing: 12,
       padding: const EdgeInsets.fromLTRB(12, 4, 12, 96),
       itemCount: notes.length,
-      itemBuilder: (context, i) =>
-          _wrap(context, ref, notes[i], previewLines, leftSwipe, rightSwipe),
+      itemBuilder: (context, i) => _wrap(
+          context, ref, notes[i], previewLines, leftSwipe, rightSwipe,
+          uniform: false),
     );
   }
 }
