@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:uuid/uuid.dart';
 
 import '../../core/note_body.dart';
+import '../attachments/attachment_store.dart';
 import '../local/database.dart';
 import '../models/checklist_item.dart';
 import '../models/note.dart';
@@ -9,9 +12,14 @@ import '../models/note.dart';
 /// stamps `updatedAt` and marks the row `dirty` so the sync engine knows to
 /// push it. The repository never talks to Drive directly.
 class NoteRepository {
-  NoteRepository(this._db, {this.onChanged});
+  NoteRepository(this._db, {this.onChanged, AttachmentStore? attachmentStore})
+      : _attachments = attachmentStore;
 
   final AppDatabase _db;
+
+  /// Cleans up attachment binaries when their note is permanently removed.
+  /// Optional so tests can construct the repo bare.
+  final AttachmentStore? _attachments;
   static const _uuid = Uuid();
 
   /// Called after every persisted mutation so callers can react (e.g. trigger a
@@ -94,6 +102,7 @@ class NoteRepository {
       note.copyWith(deleted: true, deletedAt: now, updatedAt: now),
       dirty: true,
     );
+    _cleanupAttachments(id);
     onChanged?.call();
   }
 
@@ -116,7 +125,17 @@ class NoteRepository {
   }
 
   /// Permanently remove a draft that was never meaningfully filled in.
-  Future<void> discardDraft(String id) => _db.hardDelete(id);
+  Future<void> discardDraft(String id) {
+    _cleanupAttachments(id);
+    return _db.hardDelete(id);
+  }
+
+  /// Best-effort, fire-and-forget removal of a gone note's attachment files
+  /// (the launch-time orphan sweep catches anything missed here).
+  void _cleanupAttachments(String id) {
+    final store = _attachments;
+    if (store != null) unawaited(store.removeAllFor(id));
+  }
 
   Future<void> setColor(String id, int color) async {
     final note = await _db.getNote(id);
@@ -179,7 +198,7 @@ List<Note> searchNotes(List<Note> notes, String query) {
   if (q.isEmpty) return notes;
   return notes.where((n) {
     if ((n.title ?? '').toLowerCase().contains(q)) return true;
-    if (plainTextFromBody(n.body).toLowerCase().contains(q)) return true;
+    if (plainTextOfNote(n).toLowerCase().contains(q)) return true;
     return n.items.any((i) => i.text.toLowerCase().contains(q));
   }).toList();
 }

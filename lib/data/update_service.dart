@@ -105,21 +105,31 @@ class UpdateService {
     final dir = await getTemporaryDirectory();
     final file = File('${dir.path}/$name');
     final req = http.Request('GET', Uri.parse(url));
-    final res = await http.Client().send(req);
-    if (res.statusCode != 200) {
-      throw UpdateException('Download failed (${res.statusCode}).');
-    }
+    final client = http.Client();
+    try {
+      final res = await client.send(req);
+      if (res.statusCode != 200) {
+        throw UpdateException('Download failed (${res.statusCode}).');
+      }
 
-    final total = res.contentLength ?? 0;
-    var received = 0;
-    final sink = file.openWrite();
-    await for (final chunk in res.stream) {
-      sink.add(chunk);
-      received += chunk.length;
-      if (total > 0) onProgress?.call(received / total);
+      final total = res.contentLength ?? 0;
+      var received = 0;
+      final sink = file.openWrite();
+      try {
+        await for (final chunk in res.stream) {
+          sink.add(chunk);
+          received += chunk.length;
+          if (total > 0) onProgress?.call(received / total);
+        }
+      } finally {
+        // Always release the handle — a mid-download network error must not
+        // keep the file locked (Windows) for the retry.
+        await sink.close();
+      }
+      return file;
+    } finally {
+      client.close();
     }
-    await sink.close();
-    return file;
   }
 
   Map<String, dynamic>? _assetForPlatform(List<Map<String, dynamic>> assets) {

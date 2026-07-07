@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:http/http.dart' as http;
@@ -74,11 +75,12 @@ class DriveClient {
       downloadOptions: drive.DownloadOptions.fullMedia,
     ) as drive.Media;
 
-    final bytes = <int>[];
+    final bytes = BytesBuilder(copy: false);
     await for (final chunk in media.stream) {
-      bytes.addAll(chunk);
+      bytes.add(chunk);
     }
-    return (jsonDecode(utf8.decode(bytes)) as Map).cast<String, dynamic>();
+    return (jsonDecode(utf8.decode(bytes.takeBytes())) as Map)
+        .cast<String, dynamic>();
   }
 
   /// Creates a new file in the app folder. Returns (fileId, modifiedTime).
@@ -108,6 +110,19 @@ class DriveClient {
   }
 
   Future<void> deleteFile(String fileId) => _api.files.delete(fileId);
+
+  /// Fetches just a file's current modifiedTime (one cheap metadata GET, no
+  /// content). Returns null when the file no longer exists remotely.
+  Future<String?> modifiedTime(String fileId) async {
+    try {
+      final file =
+          await _api.files.get(fileId, $fields: 'modifiedTime') as drive.File;
+      return file.modifiedTime?.toIso8601String();
+    } on drive.DetailedApiRequestError catch (e) {
+      if (e.status == 404) return null;
+      rethrow;
+    }
+  }
 
   drive.Media _media(String content) {
     final bytes = utf8.encode(content);

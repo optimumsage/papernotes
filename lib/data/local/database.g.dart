@@ -179,6 +179,17 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, NoteRow> {
     type: DriftSqlType.int,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _attachmentsMeta = const VerificationMeta(
+    'attachments',
+  );
+  @override
+  late final GeneratedColumn<String> attachments = GeneratedColumn<String>(
+    'attachments',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _driveFileIdMeta = const VerificationMeta(
     'driveFileId',
   );
@@ -232,6 +243,7 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, NoteRow> {
     deletedAt,
     reminderType,
     reminderAt,
+    attachments,
     driveFileId,
     remoteModifiedTime,
     dirty,
@@ -352,6 +364,15 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, NoteRow> {
         reminderAt.isAcceptableOrUnknown(data['reminder_at']!, _reminderAtMeta),
       );
     }
+    if (data.containsKey('attachments')) {
+      context.handle(
+        _attachmentsMeta,
+        attachments.isAcceptableOrUnknown(
+          data['attachments']!,
+          _attachmentsMeta,
+        ),
+      );
+    }
     if (data.containsKey('drive_file_id')) {
       context.handle(
         _driveFileIdMeta,
@@ -449,6 +470,10 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, NoteRow> {
         DriftSqlType.int,
         data['${effectivePrefix}reminder_at'],
       ),
+      attachments: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}attachments'],
+      ),
       driveFileId: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}drive_file_id'],
@@ -487,6 +512,7 @@ class NoteRow extends DataClass implements Insertable<NoteRow> {
   final int? deletedAt;
   final String reminderType;
   final int? reminderAt;
+  final String? attachments;
   final String? driveFileId;
   final String? remoteModifiedTime;
   final bool dirty;
@@ -507,6 +533,7 @@ class NoteRow extends DataClass implements Insertable<NoteRow> {
     this.deletedAt,
     required this.reminderType,
     this.reminderAt,
+    this.attachments,
     this.driveFileId,
     this.remoteModifiedTime,
     required this.dirty,
@@ -543,6 +570,9 @@ class NoteRow extends DataClass implements Insertable<NoteRow> {
     map['reminder_type'] = Variable<String>(reminderType);
     if (!nullToAbsent || reminderAt != null) {
       map['reminder_at'] = Variable<int>(reminderAt);
+    }
+    if (!nullToAbsent || attachments != null) {
+      map['attachments'] = Variable<String>(attachments);
     }
     if (!nullToAbsent || driveFileId != null) {
       map['drive_file_id'] = Variable<String>(driveFileId);
@@ -584,6 +614,9 @@ class NoteRow extends DataClass implements Insertable<NoteRow> {
       reminderAt: reminderAt == null && nullToAbsent
           ? const Value.absent()
           : Value(reminderAt),
+      attachments: attachments == null && nullToAbsent
+          ? const Value.absent()
+          : Value(attachments),
       driveFileId: driveFileId == null && nullToAbsent
           ? const Value.absent()
           : Value(driveFileId),
@@ -616,6 +649,7 @@ class NoteRow extends DataClass implements Insertable<NoteRow> {
       deletedAt: serializer.fromJson<int?>(json['deletedAt']),
       reminderType: serializer.fromJson<String>(json['reminderType']),
       reminderAt: serializer.fromJson<int?>(json['reminderAt']),
+      attachments: serializer.fromJson<String?>(json['attachments']),
       driveFileId: serializer.fromJson<String?>(json['driveFileId']),
       remoteModifiedTime: serializer.fromJson<String?>(
         json['remoteModifiedTime'],
@@ -643,6 +677,7 @@ class NoteRow extends DataClass implements Insertable<NoteRow> {
       'deletedAt': serializer.toJson<int?>(deletedAt),
       'reminderType': serializer.toJson<String>(reminderType),
       'reminderAt': serializer.toJson<int?>(reminderAt),
+      'attachments': serializer.toJson<String?>(attachments),
       'driveFileId': serializer.toJson<String?>(driveFileId),
       'remoteModifiedTime': serializer.toJson<String?>(remoteModifiedTime),
       'dirty': serializer.toJson<bool>(dirty),
@@ -666,6 +701,7 @@ class NoteRow extends DataClass implements Insertable<NoteRow> {
     Value<int?> deletedAt = const Value.absent(),
     String? reminderType,
     Value<int?> reminderAt = const Value.absent(),
+    Value<String?> attachments = const Value.absent(),
     Value<String?> driveFileId = const Value.absent(),
     Value<String?> remoteModifiedTime = const Value.absent(),
     bool? dirty,
@@ -686,6 +722,7 @@ class NoteRow extends DataClass implements Insertable<NoteRow> {
     deletedAt: deletedAt.present ? deletedAt.value : this.deletedAt,
     reminderType: reminderType ?? this.reminderType,
     reminderAt: reminderAt.present ? reminderAt.value : this.reminderAt,
+    attachments: attachments.present ? attachments.value : this.attachments,
     driveFileId: driveFileId.present ? driveFileId.value : this.driveFileId,
     remoteModifiedTime: remoteModifiedTime.present
         ? remoteModifiedTime.value
@@ -714,6 +751,9 @@ class NoteRow extends DataClass implements Insertable<NoteRow> {
       reminderAt: data.reminderAt.present
           ? data.reminderAt.value
           : this.reminderAt,
+      attachments: data.attachments.present
+          ? data.attachments.value
+          : this.attachments,
       driveFileId: data.driveFileId.present
           ? data.driveFileId.value
           : this.driveFileId,
@@ -743,6 +783,7 @@ class NoteRow extends DataClass implements Insertable<NoteRow> {
           ..write('deletedAt: $deletedAt, ')
           ..write('reminderType: $reminderType, ')
           ..write('reminderAt: $reminderAt, ')
+          ..write('attachments: $attachments, ')
           ..write('driveFileId: $driveFileId, ')
           ..write('remoteModifiedTime: $remoteModifiedTime, ')
           ..write('dirty: $dirty')
@@ -768,6 +809,7 @@ class NoteRow extends DataClass implements Insertable<NoteRow> {
     deletedAt,
     reminderType,
     reminderAt,
+    attachments,
     driveFileId,
     remoteModifiedTime,
     dirty,
@@ -792,6 +834,7 @@ class NoteRow extends DataClass implements Insertable<NoteRow> {
           other.deletedAt == this.deletedAt &&
           other.reminderType == this.reminderType &&
           other.reminderAt == this.reminderAt &&
+          other.attachments == this.attachments &&
           other.driveFileId == this.driveFileId &&
           other.remoteModifiedTime == this.remoteModifiedTime &&
           other.dirty == this.dirty);
@@ -814,6 +857,7 @@ class NotesCompanion extends UpdateCompanion<NoteRow> {
   final Value<int?> deletedAt;
   final Value<String> reminderType;
   final Value<int?> reminderAt;
+  final Value<String?> attachments;
   final Value<String?> driveFileId;
   final Value<String?> remoteModifiedTime;
   final Value<bool> dirty;
@@ -835,6 +879,7 @@ class NotesCompanion extends UpdateCompanion<NoteRow> {
     this.deletedAt = const Value.absent(),
     this.reminderType = const Value.absent(),
     this.reminderAt = const Value.absent(),
+    this.attachments = const Value.absent(),
     this.driveFileId = const Value.absent(),
     this.remoteModifiedTime = const Value.absent(),
     this.dirty = const Value.absent(),
@@ -857,6 +902,7 @@ class NotesCompanion extends UpdateCompanion<NoteRow> {
     this.deletedAt = const Value.absent(),
     this.reminderType = const Value.absent(),
     this.reminderAt = const Value.absent(),
+    this.attachments = const Value.absent(),
     this.driveFileId = const Value.absent(),
     this.remoteModifiedTime = const Value.absent(),
     this.dirty = const Value.absent(),
@@ -882,6 +928,7 @@ class NotesCompanion extends UpdateCompanion<NoteRow> {
     Expression<int>? deletedAt,
     Expression<String>? reminderType,
     Expression<int>? reminderAt,
+    Expression<String>? attachments,
     Expression<String>? driveFileId,
     Expression<String>? remoteModifiedTime,
     Expression<bool>? dirty,
@@ -904,6 +951,7 @@ class NotesCompanion extends UpdateCompanion<NoteRow> {
       if (deletedAt != null) 'deleted_at': deletedAt,
       if (reminderType != null) 'reminder_type': reminderType,
       if (reminderAt != null) 'reminder_at': reminderAt,
+      if (attachments != null) 'attachments': attachments,
       if (driveFileId != null) 'drive_file_id': driveFileId,
       if (remoteModifiedTime != null)
         'remote_modified_time': remoteModifiedTime,
@@ -929,6 +977,7 @@ class NotesCompanion extends UpdateCompanion<NoteRow> {
     Value<int?>? deletedAt,
     Value<String>? reminderType,
     Value<int?>? reminderAt,
+    Value<String?>? attachments,
     Value<String?>? driveFileId,
     Value<String?>? remoteModifiedTime,
     Value<bool>? dirty,
@@ -951,6 +1000,7 @@ class NotesCompanion extends UpdateCompanion<NoteRow> {
       deletedAt: deletedAt ?? this.deletedAt,
       reminderType: reminderType ?? this.reminderType,
       reminderAt: reminderAt ?? this.reminderAt,
+      attachments: attachments ?? this.attachments,
       driveFileId: driveFileId ?? this.driveFileId,
       remoteModifiedTime: remoteModifiedTime ?? this.remoteModifiedTime,
       dirty: dirty ?? this.dirty,
@@ -1009,6 +1059,9 @@ class NotesCompanion extends UpdateCompanion<NoteRow> {
     if (reminderAt.present) {
       map['reminder_at'] = Variable<int>(reminderAt.value);
     }
+    if (attachments.present) {
+      map['attachments'] = Variable<String>(attachments.value);
+    }
     if (driveFileId.present) {
       map['drive_file_id'] = Variable<String>(driveFileId.value);
     }
@@ -1043,6 +1096,7 @@ class NotesCompanion extends UpdateCompanion<NoteRow> {
           ..write('deletedAt: $deletedAt, ')
           ..write('reminderType: $reminderType, ')
           ..write('reminderAt: $reminderAt, ')
+          ..write('attachments: $attachments, ')
           ..write('driveFileId: $driveFileId, ')
           ..write('remoteModifiedTime: $remoteModifiedTime, ')
           ..write('dirty: $dirty, ')
@@ -1632,11 +1686,24 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
   late final $NotesTable notes = $NotesTable(this);
   late final $FoldersTable folders = $FoldersTable(this);
+  late final Index idxNotesDeletedStatus = Index(
+    'idx_notes_deleted_status',
+    'CREATE INDEX idx_notes_deleted_status ON notes (deleted, status)',
+  );
+  late final Index idxNotesDirty = Index(
+    'idx_notes_dirty',
+    'CREATE INDEX idx_notes_dirty ON notes (dirty)',
+  );
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
   @override
-  List<DatabaseSchemaEntity> get allSchemaEntities => [notes, folders];
+  List<DatabaseSchemaEntity> get allSchemaEntities => [
+    notes,
+    folders,
+    idxNotesDeletedStatus,
+    idxNotesDirty,
+  ];
 }
 
 typedef $$NotesTableCreateCompanionBuilder =
@@ -1657,6 +1724,7 @@ typedef $$NotesTableCreateCompanionBuilder =
       Value<int?> deletedAt,
       Value<String> reminderType,
       Value<int?> reminderAt,
+      Value<String?> attachments,
       Value<String?> driveFileId,
       Value<String?> remoteModifiedTime,
       Value<bool> dirty,
@@ -1680,6 +1748,7 @@ typedef $$NotesTableUpdateCompanionBuilder =
       Value<int?> deletedAt,
       Value<String> reminderType,
       Value<int?> reminderAt,
+      Value<String?> attachments,
       Value<String?> driveFileId,
       Value<String?> remoteModifiedTime,
       Value<bool> dirty,
@@ -1771,6 +1840,11 @@ class $$NotesTableFilterComposer extends Composer<_$AppDatabase, $NotesTable> {
 
   ColumnFilters<int> get reminderAt => $composableBuilder(
     column: $table.reminderAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get attachments => $composableBuilder(
+    column: $table.attachments,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -1879,6 +1953,11 @@ class $$NotesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get attachments => $composableBuilder(
+    column: $table.attachments,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get driveFileId => $composableBuilder(
     column: $table.driveFileId,
     builder: (column) => ColumnOrderings(column),
@@ -1956,6 +2035,11 @@ class $$NotesTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<String> get attachments => $composableBuilder(
+    column: $table.attachments,
+    builder: (column) => column,
+  );
+
   GeneratedColumn<String> get driveFileId => $composableBuilder(
     column: $table.driveFileId,
     builder: (column) => column,
@@ -2014,6 +2098,7 @@ class $$NotesTableTableManager
                 Value<int?> deletedAt = const Value.absent(),
                 Value<String> reminderType = const Value.absent(),
                 Value<int?> reminderAt = const Value.absent(),
+                Value<String?> attachments = const Value.absent(),
                 Value<String?> driveFileId = const Value.absent(),
                 Value<String?> remoteModifiedTime = const Value.absent(),
                 Value<bool> dirty = const Value.absent(),
@@ -2035,6 +2120,7 @@ class $$NotesTableTableManager
                 deletedAt: deletedAt,
                 reminderType: reminderType,
                 reminderAt: reminderAt,
+                attachments: attachments,
                 driveFileId: driveFileId,
                 remoteModifiedTime: remoteModifiedTime,
                 dirty: dirty,
@@ -2058,6 +2144,7 @@ class $$NotesTableTableManager
                 Value<int?> deletedAt = const Value.absent(),
                 Value<String> reminderType = const Value.absent(),
                 Value<int?> reminderAt = const Value.absent(),
+                Value<String?> attachments = const Value.absent(),
                 Value<String?> driveFileId = const Value.absent(),
                 Value<String?> remoteModifiedTime = const Value.absent(),
                 Value<bool> dirty = const Value.absent(),
@@ -2079,6 +2166,7 @@ class $$NotesTableTableManager
                 deletedAt: deletedAt,
                 reminderType: reminderType,
                 reminderAt: reminderAt,
+                attachments: attachments,
                 driveFileId: driveFileId,
                 remoteModifiedTime: remoteModifiedTime,
                 dirty: dirty,

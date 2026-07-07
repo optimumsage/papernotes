@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../core/note_sort.dart';
 import '../core/platform.dart';
 import '../core/swipe_action.dart';
+import '../data/attachments/attachment_store.dart';
 import '../data/local/database.dart';
 import '../data/models/folder.dart';
 import '../data/models/note.dart';
@@ -31,6 +32,9 @@ final databaseProvider = Provider<AppDatabase>((_) {
 final initialSettingsProvider = Provider<AppSettings>((_) {
   throw UnimplementedError('initialSettingsProvider must be overridden');
 });
+final attachmentStoreProvider = Provider<AttachmentStore>((_) {
+  throw UnimplementedError('attachmentStoreProvider must be overridden');
+});
 
 final settingsServiceProvider = Provider<SettingsService>(
   (ref) => SettingsService(ref.watch(prefsProvider)),
@@ -39,6 +43,7 @@ final settingsServiceProvider = Provider<SettingsService>(
 final noteRepositoryProvider = Provider<NoteRepository>(
   (ref) => NoteRepository(
     ref.watch(databaseProvider),
+    attachmentStore: ref.watch(attachmentStoreProvider),
     // Push note changes to Drive shortly after they happen (debounced).
     onChanged: () => ref.read(syncControllerProvider.notifier).requestSync(),
   ),
@@ -83,13 +88,17 @@ final reminderServiceProvider = Provider<ReminderService>(
 /// notes stream so every create/edit/delete (and remote sync) converges here.
 /// Kept alive by [PaperNotesApp] (`ref.watch`) so its subscription persists.
 final reminderReconcilerProvider = Provider<ReminderReconciler>((ref) {
+  final service = ref.read(reminderServiceProvider);
   final reconciler = ReminderReconciler(
-    ref.read(reminderServiceProvider),
+    service,
     // A fired/past timed alarm is one-shot: clear it so it doesn't re-fire.
     onFired: (id) =>
         ref.read(noteRepositoryProvider).setReminder(id, ReminderType.none, null),
   );
   ref.onDispose(reconciler.dispose);
+  // Service init is not awaited before the first frame; replay the latest
+  // notes once notifications are actually ready.
+  unawaited(service.whenReady.then((_) => reconciler.replay()));
   ref.listen<AsyncValue<List<Note>>>(
     activeNotesProvider,
     (_, next) {
@@ -106,10 +115,13 @@ final reminderReconcilerProvider = Provider<ReminderReconciler>((ref) {
 final activeNotesProvider = StreamProvider<List<Note>>(
   (ref) => ref.watch(noteRepositoryProvider).watchActive(),
 );
-final archivedNotesProvider = StreamProvider<List<Note>>(
+// Archive/Trash are autoDispose: drift re-runs every live watch query on any
+// write to the notes table, so keeping these alive after leaving the screen
+// would re-query + re-map all three lists on every autosave, forever.
+final archivedNotesProvider = StreamProvider.autoDispose<List<Note>>(
   (ref) => ref.watch(noteRepositoryProvider).watchArchived(),
 );
-final trashedNotesProvider = StreamProvider<List<Note>>(
+final trashedNotesProvider = StreamProvider.autoDispose<List<Note>>(
   (ref) => ref.watch(noteRepositoryProvider).watchTrashed(),
 );
 
@@ -173,7 +185,7 @@ final filteredNotesProvider = Provider<List<Note>>((ref) {
 });
 
 /// Archived notes, searched + sorted the same way.
-final filteredArchivedProvider = Provider<List<Note>>((ref) {
+final filteredArchivedProvider = Provider.autoDispose<List<Note>>((ref) {
   final notes = ref.watch(archivedNotesProvider).value ?? const [];
   final query = ref.watch(searchQueryProvider);
   final sortMode = ref.watch(
@@ -182,7 +194,7 @@ final filteredArchivedProvider = Provider<List<Note>>((ref) {
 });
 
 /// Trashed notes, searched + sorted the same way.
-final filteredTrashedProvider = Provider<List<Note>>((ref) {
+final filteredTrashedProvider = Provider.autoDispose<List<Note>>((ref) {
   final notes = ref.watch(trashedNotesProvider).value ?? const [];
   final query = ref.watch(searchQueryProvider);
   final sortMode = ref.watch(
@@ -296,8 +308,12 @@ class SettingsController extends Notifier<AppSettings> {
     await reload();
   }
 
-  Future<void> markSyncedNow() async {
-    await reload();
+  /// Refresh only `lastSyncedAt` after a sync. Deliberately not a full
+  /// [reload]: that would rebuild the whole settings object (re-reading the
+  /// encrypted secret store) seconds after every autosave-triggered sync.
+  void markSyncedNow() {
+    final at = _service.lastSyncedAt;
+    if (at != null) state = state.copyWith(lastSyncedAt: at);
   }
 }
 
@@ -325,10 +341,14 @@ class SyncController extends Notifier<SyncStatus> {
 
   /// Debounced auto-sync after a note/folder mutation. Coalesces bursts (e.g.
   /// the editor's frequent autosaves) into a single sync a few seconds later.
-  /// No-ops at fire time when sync is disabled / signed out (see [syncNow]).
+  /// Quick mode: just pushes the dirty rows when possible instead of re-listing
+  /// the whole Drive folder — remote changes are picked up by the launch /
+  /// interval / manual syncs. No-ops at fire time when sync is disabled /
+  /// signed out (see [syncNow]).
   void requestSync() {
     _debounce?.cancel();
-    _debounce = Timer(const Duration(seconds: 3), () => unawaited(syncNow()));
+    _debounce =
+        Timer(const Duration(seconds: 3), () => unawaited(syncNow(quick: true)));
   }
 
   /// Sign in interactively, then enable sync and run the first sync.
@@ -354,14 +374,15 @@ class SyncController extends Notifier<SyncStatus> {
     state = const SyncStatus(SyncPhase.idle);
   }
 
-  /// Run one full two-way sync cycle. Safe to call from UI buttons and timers.
-  Future<void> syncNow() async {
+  /// Run one sync cycle (full two-way, or push-only when [quick] and possible).
+  /// Safe to call from UI buttons and timers.
+  Future<void> syncNow({bool quick = false}) async {
     final settings = ref.read(settingsControllerProvider);
     if (!settings.syncEnabled || !settings.signedIn) return;
     try {
       state = const SyncStatus(SyncPhase.running, 'Syncing…');
-      final result = await ref.read(syncEngineProvider).sync();
-      await ref.read(settingsControllerProvider.notifier).markSyncedNow();
+      final result = await ref.read(syncEngineProvider).sync(quick: quick);
+      ref.read(settingsControllerProvider.notifier).markSyncedNow();
       state = SyncStatus(
         SyncPhase.success,
         '↓${result.pulled} ↑${result.pushed}',

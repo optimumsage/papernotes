@@ -1,0 +1,83 @@
+# Changelog
+
+All notable changes to PaperNote are documented here. This project follows
+[Semantic Versioning](https://semver.org/).
+
+## [0.8.0] - 2026-07-07
+
+### Added
+- **Note attachments.** Attach files to any note or checklist via the paperclip
+  in the editor. On **Android** the attach button offers three sources: pick a
+  file, **scan a document** (ML Kit document scanner with edge detection and
+  auto-capture; multi-page scans land as a single PDF), or **take a photo**.
+  On desktop (Windows/macOS/Linux) attachments are file-picker only. Attachments
+  show as slim tiles under the note body (images get thumbnails) — tap to open
+  with the system handler, × to remove. Cards show a paperclip badge.
+  Attachments are **device-local**: binaries are never uploaded to Drive, and
+  incoming synced edits never disturb the local attachment list. Files live in
+  the app's private storage and are cleaned up when their note is permanently
+  deleted (with a launch-time sweep for notes removed via sync).
+  Storage: drift schema **v5** (additive `attachments` metadata column).
+
+### Performance
+- **Typing no longer serializes the whole document per keystroke.** The editor
+  used to serialize + JSON-encode the full Fleather document on every keystroke
+  *and* selection change (3–4 full document walks) just to detect edits; it now
+  listens to the document's change stream and serializes once per debounced
+  autosave. Long notes type noticeably smoother.
+- **The editor no longer rebuilds after every background sync.** It watched the
+  whole settings object, and each sync refreshed that object (also re-reading
+  the encrypted secret store); it now selects just what it uses, and the
+  post-sync refresh only touches the last-synced timestamp.
+- **Autosaves no longer re-run the Archive and Trash queries forever.** Those
+  watchers now dispose when their screens close; previously, after visiting
+  Archive/Trash once, every autosave re-queried and re-mapped all three note
+  lists for the rest of the session.
+- **Auto-sync after an edit no longer re-lists the entire Drive folder.** The
+  debounced after-edit sync now just uploads the changed rows when possible
+  (full two-way sync still runs on launch, on the periodic timer, and manually).
+- **Faster, calmer startup.** Notification/timezone initialization no longer
+  blocks the first frame (on first Android launch the permission dialog could
+  hold the splash screen indefinitely); reminders reconcile as soon as it
+  completes.
+- **Search stays fast past 512 notes.** The note-preview text cache is now
+  keyed per note (validated by edit time), so large libraries no longer
+  re-decode every body on each search keystroke.
+- Added SQLite indexes for the note-list and sync queries; fixed an HTTP client
+  leak in the update downloader and quadratic byte accumulation in Drive
+  downloads.
+
+## [0.7.1] - 2026-06-23
+
+### Fixed
+- **List view rows are now uniform.** In single-column list view, every note now
+  renders at a fixed, content-independent height and full width, so rows no
+  longer vary in size with note length. `NoteCard` gained a `uniform` mode (fixed
+  height scaled by the user's font setting; the preview fills and clips the
+  remaining space via `OverflowBox` + `ClipRect`). The masonry grid is unchanged.
+- **Settings: last item no longer hidden under the navigation bar.** The Settings
+  list now adds the system nav-bar inset to its bottom padding, so "Check for
+  updates" clears Android's edge-to-edge navigation bar.
+
+### Tests
+- Added a widget test asserting a uniform list card renders at identical width
+  and height regardless of body length, with no overflow.
+
+## [0.7.0] - 2026-06-23
+
+### Added
+- **Configurable note swipe actions (Android).** Swipe a note left or right to
+  run an action: delete (to Trash), pin, archive, reminder, or move to folder.
+  Each direction is configurable in **Settings → Swipe actions** (Android only);
+  defaults are right = Archive, left = Delete. Works in both list and grid views
+  on active notes. Reuses the existing context-menu handlers, so undo snackbars
+  and the reminder/folder sheets behave identically.
+
+### Performance
+- **Note preview/search no longer re-parse on every build.** `plainTextFromBody`
+  now memoizes its result in a bounded (512-entry) content-keyed cache, so the
+  Delta-JSON decode no longer runs per card build and per note on every search
+  keystroke.
+- Markdown-marker regexes are compiled once (hoisted to top-level finals) instead
+  of on every call.
+- List/grid cards are wrapped in `RepaintBoundary` to isolate repaints.

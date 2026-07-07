@@ -1,8 +1,11 @@
+import 'dart:io';
+
 import 'package:drift/native.dart';
 import 'package:fleather/fleather.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:papernote/data/attachments/attachment_store.dart';
 import 'package:papernote/data/local/database.dart';
 import 'package:papernote/data/models/note.dart';
 import 'package:papernote/data/settings_service.dart';
@@ -19,6 +22,8 @@ Widget _harness(AppDatabase db, Widget child) {
     overrides: [
       databaseProvider.overrideWithValue(db),
       initialSettingsProvider.overrideWithValue(const AppSettings()),
+      attachmentStoreProvider.overrideWithValue(
+          AttachmentStore(Directory.systemTemp.createTempSync('att'))),
     ],
     child: MaterialApp(
       localizationsDelegates: const [FleatherLocalizations.delegate],

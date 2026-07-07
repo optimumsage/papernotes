@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -51,8 +52,15 @@ class ReminderService {
   final FlutterLocalNotificationsPlugin _fln =
       FlutterLocalNotificationsPlugin();
   bool _ready = false;
+  final _readyCompleter = Completer<void>();
 
   bool get ready => _ready;
+
+  /// Completes once [init] has finished (successfully or not — check [ready]).
+  /// Lets the reconciler replay the notes it saw while init was still running;
+  /// init is no longer awaited before the first frame (it can block on a
+  /// permission dialog).
+  Future<void> get whenReady => _readyCompleter.future;
 
   bool get _useFln =>
       !kIsWeb && (Platform.isAndroid || Platform.isMacOS || Platform.isLinux);
@@ -94,6 +102,10 @@ class ReminderService {
       _ready = true;
     } catch (e) {
       debugPrint('ReminderService init failed: $e');
+    } finally {
+      // Always release waiters — a failed init must not leave [whenReady]
+      // dangling (the reconciler's replay closure would be pinned forever).
+      if (!_readyCompleter.isCompleted) _readyCompleter.complete();
     }
   }
 
@@ -128,7 +140,7 @@ class ReminderService {
           .take(3);
       return texts.isEmpty ? 'Checklist reminder' : texts.join(', ');
     }
-    final body = plainTextFromBody(note.body).trim();
+    final body = plainTextOfNote(note).trim();
     return body.isEmpty ? 'Note reminder' : body;
   }
 

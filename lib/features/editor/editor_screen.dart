@@ -4,14 +4,18 @@ import 'package:fleather/fleather.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/app_snackbar.dart';
 import '../../core/constants.dart';
 import '../../core/date_format.dart';
 import '../../core/note_colors.dart';
 import '../../core/note_share.dart';
+import '../../data/models/attachment.dart';
 import '../../data/models/checklist_item.dart';
 import '../../data/models/note.dart';
 import '../../providers/providers.dart';
 import '../reminders/reminder_sheet.dart';
+import 'attachment_picker.dart';
+import 'attachment_section.dart';
 import 'checklist_body.dart';
 import 'color_picker.dart';
 import 'note_document.dart';
@@ -50,16 +54,22 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
   final _titleController = TextEditingController();
   final _bodyFocus = FocusNode();
   FleatherController? _body;
+  StreamSubscription? _docChanges;
   Timer? _debounce;
-
-  /// Serialized document as last loaded/saved. Lets us tell a real content edit
-  /// (mark dirty) from a selection-only change (ignore), so merely moving the
-  /// caret never bumps `updatedAt`.
-  String _savedBody = '';
 
   /// True once the user actually changes something. Prevents merely opening a
   /// note (then leaving) from bumping its `updatedAt` / re-syncing it.
   bool _dirty = false;
+
+  /// Title/body as last loaded or saved. Compared at flush time so
+  /// serialization-neutral edits (whitespace in an empty body, undo back to
+  /// the saved state) don't bump `updatedAt` or trigger a sync push.
+  String _savedBody = '';
+  String _savedTitle = '';
+
+  /// True when a non-text field changed (color, pin, checklist items,
+  /// attachments) — those aren't visible in the title/body comparison.
+  bool _metaDirty = false;
 
   @override
   void initState() {
@@ -91,9 +101,13 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
       _showTitle = _note.hasTitle || _note.isChecklist;
     }
     _titleController.text = _note.title ?? '';
+    _savedTitle = _titleController.text;
     final controller = FleatherController(document: documentFromBody(_note.body));
     _savedBody = bodyFromDocument(controller.document) ?? '';
-    controller.addListener(_onBodyChanged);
+    // Content mutations only (selection moves don't emit here), so merely
+    // moving the caret never marks the note dirty. Serialization is deferred
+    // to the debounced flush — nothing walks the document per keystroke.
+    _docChanges = controller.document.changes.listen((_) => _scheduleSave());
     _body = controller;
     setState(() => _loaded = true);
   }
@@ -101,10 +115,10 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
   @override
   void dispose() {
     _debounce?.cancel();
+    _docChanges?.cancel();
     _bodyFocus.removeListener(_onBodyFocusChange);
     _bodyFocus.dispose();
     _titleController.dispose();
-    _body?.removeListener(_onBodyChanged);
     _body?.dispose();
     super.dispose();
   }
@@ -113,57 +127,45 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
 
   String _currentBody() => bodyFromDocument(_body!.document) ?? '';
 
-  /// Fires on every document change (content or selection). Selection-only
-  /// changes serialize identically, so they don't mark the note dirty.
-  void _onBodyChanged() {
-    final body = _currentBody();
-    if (body == _savedBody) return;
-    _dirty = true;
-    _note = _note.copyWith(title: _titleController.text, body: body);
-    _debounce?.cancel();
-    _debounce = Timer(AppConfig.autosaveDebounce, _flush);
-  }
-
+  /// Marks the note dirty and (re)arms the autosave debounce. Title and body
+  /// are only serialized into [_note] at flush/exit time — nothing walks the
+  /// document per keystroke.
   void _scheduleSave() {
     _dirty = true;
-    _note = _note.copyWith(
-      title: _titleController.text,
-      body: _currentBody(),
-    );
     _debounce?.cancel();
     _debounce = Timer(AppConfig.autosaveDebounce, _flush);
   }
 
   Future<void> _flush() async {
     _debounce?.cancel();
-    _note = _note.copyWith(
-      title: _titleController.text,
-      body: _currentBody(),
-    );
+    final title = _titleController.text;
+    final body = _currentBody();
+    _note = _note.copyWith(title: title, body: body);
     if (_shouldDiscard) return; // don't persist invalid/empty drafts
     if (!_dirty) return; // nothing changed — don't bump updatedAt
+    // Edits that serialize back to the saved state are no-ops.
+    if (!_metaDirty && body == _savedBody && title == _savedTitle) return;
     await ref.read(noteRepositoryProvider).save(_note);
-    _savedBody = _note.body ?? '';
+    _savedBody = body;
+    _savedTitle = title;
+    _metaDirty = false;
+    _dirty = false;
   }
 
   /// A new note with no content, or any checklist left without its required
-  /// title, should not be persisted.
+  /// title, should not be persisted. An attachment always counts as content:
+  /// discarding would silently delete the just-imported file.
   bool get _shouldDiscard {
+    if (_note.hasAttachments) return false;
     if (_note.isEmpty) return true;
     if (_note.isChecklist && !_note.hasTitle) return true;
     return false;
   }
 
   Future<void> _onExit() async {
-    _debounce?.cancel();
-    _note = _note.copyWith(
-      title: _titleController.text,
-      body: _currentBody(),
-    );
+    await _flush();
     if (_shouldDiscard) {
       await ref.read(noteRepositoryProvider).discardDraft(_note.id);
-    } else if (_dirty) {
-      await ref.read(noteRepositoryProvider).save(_note);
     }
   }
 
@@ -171,6 +173,7 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
 
   void _updateItems(List<ChecklistItem> items) {
     setState(() => _note = _note.copyWith(items: items));
+    _metaDirty = true;
     _scheduleSave();
   }
 
@@ -236,6 +239,7 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
       selected: _note.color,
       onPick: (c) {
         setState(() => _note = _note.copyWith(color: c));
+        _metaDirty = true;
         _scheduleSave();
       },
     );
@@ -243,6 +247,7 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
 
   void _togglePin() {
     setState(() => _note = _note.copyWith(pinned: !_note.pinned));
+    _metaDirty = true;
     _scheduleSave();
   }
 
@@ -256,12 +261,73 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
 
   Future<void> _share() async {
     final messenger = ScaffoldMessenger.of(context);
+    // Fold in unflushed edits so Share exports what's on screen, not the
+    // last-autosaved state.
+    _note = _note.copyWith(title: _titleController.text, body: _currentBody());
     final shared = await shareNote(_note);
     if (!shared) {
       messenger.clearSnackBars();
       messenger.showSnackBar(
           const SnackBar(content: Text('Copied to clipboard')));
     }
+  }
+
+  // ---- attachments ----
+
+  /// Pick (file / scan / camera per platform), import into the attachment
+  /// store, and persist immediately — the binary is already on disk, so the
+  /// metadata must not sit in the debounce window.
+  Future<void> _addAttachment() async {
+    final store = ref.read(attachmentStoreProvider);
+    try {
+      final added = await pickAttachments(context, store, _note.id);
+      if (added.isEmpty) return;
+      if (!mounted) {
+        // Editor is gone — remove the just-imported copies rather than
+        // leaving orphaned files under a live note id.
+        for (final attachment in added) {
+          unawaited(store.remove(_note.id, attachment));
+        }
+        return;
+      }
+      setState(() => _note =
+          _note.copyWith(attachments: [..._note.attachments, ...added]));
+      _dirty = true;
+      _metaDirty = true;
+      await _flush();
+    } catch (e) {
+      if (mounted) showAppSnackBar(context, 'Could not attach file: $e');
+    }
+  }
+
+  /// Confirm, then drop the attachment from the note and delete its file
+  /// (there is no undo — the binary is gone).
+  Future<void> _removeAttachment(NoteAttachment attachment) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove attachment?'),
+        content: Text('"${attachment.name}" will be deleted from this note.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _note = _note.copyWith(
+        attachments:
+            _note.attachments.where((a) => a.id != attachment.id).toList()));
+    _dirty = true;
+    _metaDirty = true;
+    await _flush();
+    await ref.read(attachmentStoreProvider).remove(_note.id, attachment);
   }
 
   @override
@@ -275,7 +341,10 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     final onBg = ThemeData.estimateBrightnessForColor(bg) == Brightness.dark
         ? Colors.white
         : const Color(0xFF1E1E22);
-    final ruled = ref.watch(settingsControllerProvider).ruledLines;
+    // select() so unrelated settings changes (e.g. the post-sync lastSyncedAt
+    // refresh that lands seconds after every autosave) don't rebuild the editor.
+    final ruled =
+        ref.watch(settingsControllerProvider.select((s) => s.ruledLines));
 
     return PopScope(
       canPop: false,
@@ -303,6 +372,11 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
                 },
               ),
               actions: [
+                IconButton(
+                  tooltip: 'Attach',
+                  icon: Icon(Icons.attach_file, color: onBg),
+                  onPressed: _addAttachment,
+                ),
                 IconButton(
                   tooltip: _note.pinned ? 'Unpin' : 'Pin',
                   icon: Icon(
@@ -408,6 +482,16 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
                         )
                       else
                         _bodyField(theme, onBg, ruled),
+                      if (_note.hasAttachments) ...[
+                        const SizedBox(height: 24),
+                        AttachmentSection(
+                          noteId: _note.id,
+                          attachments: _note.attachments,
+                          store: ref.read(attachmentStoreProvider),
+                          onBg: onBg,
+                          onRemove: _removeAttachment,
+                        ),
+                      ],
                       const SizedBox(height: 24),
                       _metadata(theme, onBg),
                     ],
@@ -505,7 +589,9 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
       child: ListenableBuilder(
         listenable: _body!,
         builder: (context, _) {
-          if (_body!.document.toPlainText().trim().isNotEmpty) {
+          // An empty Parchment document is a single '\n' (length 1) — checking
+          // the length avoids materializing the full plain text per keystroke.
+          if (_body!.document.length > 1) {
             return const SizedBox.shrink();
           }
           return IgnorePointer(

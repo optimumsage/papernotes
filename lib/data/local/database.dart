@@ -5,6 +5,7 @@ import 'package:drift/native.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../models/attachment.dart';
 import '../models/folder.dart';
 import '../models/note.dart';
 
@@ -13,6 +14,11 @@ part 'database.g.dart';
 /// Drift table backing every note and checklist. `items` holds checklist rows
 /// as a JSON string; `body` holds free text for plain notes. Sync bookkeeping
 /// (driveFileId / remoteModifiedTime / dirty) lives alongside the content.
+// Every live watch query filters on (deleted, status); the sync engine scans
+// on dirty. Indexed so those stay cheap as the table grows (the watch queries
+// re-run on every write to the table).
+@TableIndex(name: 'idx_notes_deleted_status', columns: {#deleted, #status})
+@TableIndex(name: 'idx_notes_dirty', columns: {#dirty})
 @DataClassName('NoteRow')
 class Notes extends Table {
   TextColumn get id => text()();
@@ -35,6 +41,10 @@ class Notes extends Table {
   TextColumn get reminderType =>
       text().withDefault(const Constant('none'))(); // none|alarm|pinned
   IntColumn get reminderAt => integer().nullable()(); // epoch ms (alarm)
+
+  // Attachments (JSON metadata list; binaries live in the AttachmentStore.
+  // Device-local — never synced, and preserved when remote updates land).
+  TextColumn get attachments => text().nullable()();
 
   // Sync metadata
   TextColumn get driveFileId => text().nullable()();
@@ -71,7 +81,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -87,6 +97,11 @@ class AppDatabase extends _$AppDatabase {
           if (from < 4) {
             await m.addColumn(notes, notes.reminderType);
             await m.addColumn(notes, notes.reminderAt);
+          }
+          if (from < 5) {
+            await m.addColumn(notes, notes.attachments);
+            await m.createIndex(idxNotesDeletedStatus);
+            await m.createIndex(idxNotesDirty);
           }
         },
       );
@@ -144,6 +159,18 @@ class AppDatabase extends _$AppDatabase {
     return rows.map(_toModel).toList();
   }
 
+  /// Dirty rows in raw form (includes sync columns) so the sync engine can
+  /// push without a per-note re-query.
+  Future<List<NoteRow>> dirtyRawNoteRows() =>
+      (select(notes)..where((t) => t.dirty.equals(true))).get();
+
+  Future<List<FolderRow>> dirtyRawFolderRows() =>
+      (select(folders)..where((t) => t.dirty.equals(true))).get();
+
+  /// Public row→model mapping for callers holding raw rows.
+  Note noteFromRow(NoteRow row) => _toModel(row);
+  Folder folderFromRow(FolderRow row) => _toFolderModel(row);
+
   /// Returns the raw row for a note (includes sync columns) or null.
   Future<NoteRow?> rawRow(String id) {
     return (select(notes)..where((t) => t.id.equals(id))).getSingleOrNull();
@@ -170,6 +197,8 @@ class AppDatabase extends _$AppDatabase {
 
   /// Apply a note that came down from Drive. Preserves the supplied sync
   /// metadata and marks the row clean (it already matches the remote).
+  /// The `attachments` column is left untouched: attachments are device-local
+  /// (never in the Drive payload), so a remote update must not wipe them.
   Future<void> applyRemote(
     Note note, {
     required String driveFileId,
@@ -179,6 +208,7 @@ class AppDatabase extends _$AppDatabase {
       _toCompanion(note, dirty: false).copyWith(
         driveFileId: Value(driveFileId),
         remoteModifiedTime: Value(remoteModifiedTime),
+        attachments: const Value.absent(),
       ),
     );
   }
@@ -322,6 +352,7 @@ class AppDatabase extends _$AppDatabase {
           orElse: () => ReminderType.none,
         ),
         reminderAt: row.reminderAt,
+        attachments: NoteAttachment.decodeList(row.attachments),
       );
 
   NotesCompanion _toCompanion(Note note, {required bool dirty}) {
@@ -342,6 +373,7 @@ class AppDatabase extends _$AppDatabase {
       deletedAt: Value(note.deletedAt),
       reminderType: Value(note.reminderType.name),
       reminderAt: Value(note.reminderAt),
+      attachments: Value(note.attachmentsToColumn()),
       dirty: Value(dirty),
     );
   }

@@ -31,6 +31,11 @@ class NoteCard extends StatelessWidget {
   /// active text scaler so it stays proportional to the user's font size.
   static const _uniformBaseHeight = 116.0;
 
+  /// Whether [_statusIcons] has anything to draw — the single gate both
+  /// layouts use, so a new glyph can't appear in one layout and not the other.
+  bool get _hasStatusIcons =>
+      note.pinned || note.hasReminder || note.hasAttachments;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -68,7 +73,7 @@ class NoteCard extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (note.pinned || note.hasReminder)
+        if (_hasStatusIcons)
           Align(alignment: Alignment.topRight, child: _statusIcons(onBg)),
         if (note.hasTitle) ...[
           Text(
@@ -108,7 +113,7 @@ class NoteCard extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            if (note.pinned || note.hasReminder) ...[
+            if (_hasStatusIcons) ...[
               const SizedBox(width: 6),
               _statusIcons(onBg),
             ],
@@ -135,6 +140,10 @@ class NoteCard extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (note.hasAttachments) ...[
+          Icon(Icons.attach_file, size: 14, color: onBg.withValues(alpha: 0.5)),
+          if (note.hasReminder || note.pinned) const SizedBox(width: 4),
+        ],
         if (note.hasReminder)
           Icon(
             note.reminderType == ReminderType.pinned
@@ -207,7 +216,7 @@ class NoteCard extends StatelessWidget {
       );
     }
 
-    final body = plainTextFromBody(note.body).trim();
+    final body = plainTextOfNote(note).trim();
     if (body.isEmpty && !note.hasTitle) {
       return Text('Empty note',
           style: theme.textTheme.bodyMedium

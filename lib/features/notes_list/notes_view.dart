@@ -205,7 +205,7 @@ class _DragFeedback extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final preview = plainTextFromBody(note.body).trim();
+    final preview = plainTextOfNote(note).trim();
     final label = note.hasTitle
         ? note.title!.trim()
         : (note.isChecklist

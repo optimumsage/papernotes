@@ -35,10 +35,25 @@ class SyncEngine {
   int get _now => DateTime.now().millisecondsSinceEpoch;
 
   /// Runs a full pull → push → purge cycle. Reentrant calls are ignored.
-  Future<SyncResult> sync() async {
+  ///
+  /// [quick] is the debounced after-edit path: when it is provably safe (see
+  /// [_canQuickPush]) it just uploads the dirty rows and skips the full folder
+  /// listing + pull + purge, which the launch / interval / manual syncs cover.
+  Future<SyncResult> sync({bool quick = false}) async {
     if (_running) return const SyncResult(0, 0, 0);
     _running = true;
     try {
+      if (quick) {
+        final dirtyNotes = await _db.dirtyRawNoteRows();
+        final dirtyFolders = await _db.dirtyRawFolderRows();
+        if (await _canQuickPush(dirtyNotes, dirtyFolders)) {
+          final pushed = await _pushFolders(const {}, rows: dirtyFolders) +
+              await _push(const {}, rows: dirtyNotes);
+          await _settings.setLastSyncedAt(_now);
+          return SyncResult(0, pushed, 0);
+        }
+      }
+
       final remote = await _client.list();
       // Partition the remote listing into note files and folder files.
       final remoteNotes =
@@ -68,6 +83,36 @@ class SyncEngine {
     } finally {
       _running = false;
     }
+  }
+
+  /// True when pushing the dirty rows without a pull first cannot violate
+  /// last-write-wins: every row already has a Drive file AND that file is
+  /// unchanged since we last saw it (verified with one cheap metadata GET per
+  /// row — the debounced after-edit sync typically has exactly one). Any
+  /// unknown file, remote change, or a large dirty set falls back to the full
+  /// pull-first cycle, which resolves conflicts by `updatedAt` as before.
+  Future<bool> _canQuickPush(
+      List<NoteRow> notes, List<FolderRow> folders) async {
+    if (notes.length + folders.length > 5) return false;
+    for (final row in notes) {
+      if (row.driveFileId == null || row.remoteModifiedTime == null) {
+        return false;
+      }
+      if (await _client.modifiedTime(row.driveFileId!) !=
+          row.remoteModifiedTime) {
+        return false;
+      }
+    }
+    for (final row in folders) {
+      if (row.driveFileId == null || row.remoteModifiedTime == null) {
+        return false;
+      }
+      if (await _client.modifiedTime(row.driveFileId!) !=
+          row.remoteModifiedTime) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /// Download remote files that are new or newer than the local copy.
@@ -106,13 +151,14 @@ class SyncEngine {
   }
 
   /// Upload every locally-dirty note (creates or overwrites its Drive file).
-  /// Re-reads dirty rows after the pull so freshly-applied remotes aren't
-  /// re-pushed.
-  Future<int> _push(Map<String, RemoteFile> remoteById) async {
+  /// Re-reads dirty rows after the pull (unless [rows] is supplied by the
+  /// quick path) so freshly-applied remotes aren't re-pushed.
+  Future<int> _push(Map<String, RemoteFile> remoteById,
+      {List<NoteRow>? rows}) async {
     var pushed = 0;
-    for (final note in await _db.dirtyNotes()) {
-      final raw = await _db.rawRow(note.id);
-      final existingId = raw?.driveFileId ?? remoteById[note.id]?.id;
+    for (final raw in rows ?? await _db.dirtyRawNoteRows()) {
+      final note = _db.noteFromRow(raw);
+      final existingId = raw.driveFileId ?? remoteById[note.id]?.id;
 
       final result = existingId == null
           ? await _client.create(note.id, note.encode())
@@ -190,11 +236,12 @@ class SyncEngine {
     return pulled;
   }
 
-  Future<int> _pushFolders(Map<String, RemoteFile> remoteById) async {
+  Future<int> _pushFolders(Map<String, RemoteFile> remoteById,
+      {List<FolderRow>? rows}) async {
     var pushed = 0;
-    for (final folder in await _db.dirtyFolders()) {
-      final raw = await _db.rawFolderRow(folder.id);
-      final existingId = raw?.driveFileId ?? remoteById[folder.id]?.id;
+    for (final raw in rows ?? await _db.dirtyRawFolderRows()) {
+      final folder = _db.folderFromRow(raw);
+      final existingId = raw.driveFileId ?? remoteById[folder.id]?.id;
       final fileId = _folderFileName(folder.id);
 
       final result = existingId == null

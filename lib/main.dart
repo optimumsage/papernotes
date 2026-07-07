@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'app.dart';
 import 'core/platform.dart';
+import 'data/attachments/attachment_store.dart';
 import 'data/local/database.dart';
 import 'data/reminders/reminder_service.dart';
 import 'data/settings_service.dart';
@@ -47,6 +48,7 @@ Future<void> main() async {
   final prefs = await SharedPreferences.getInstance();
   final database = AppDatabase();
   final initialSettings = await SettingsService(prefs).load();
+  final attachmentStore = await AttachmentStore.open();
 
   // Desktop: if launch-at-login is on, re-apply it so the autostart entry
   // points at the current executable after an update and self-heals if it was
@@ -55,10 +57,12 @@ Future<void> main() async {
     unawaited(AutoStartService.instance.setEnabled(true));
   }
 
-  // Initialize notifications up front so the reminder reconciler is ready
-  // before the first notes stream emission.
+  // Initialize notifications concurrently with the first frame — init parses
+  // the timezone database and, on first Android launch, can block on a
+  // permission dialog. The reminder reconciler replays the latest notes once
+  // `whenReady` completes, so nothing is missed.
   final reminderService = ReminderService();
-  await reminderService.init();
+  unawaited(reminderService.init());
 
   runApp(
     ProviderScope(
@@ -66,11 +70,27 @@ Future<void> main() async {
         prefsProvider.overrideWithValue(prefs),
         databaseProvider.overrideWithValue(database),
         initialSettingsProvider.overrideWithValue(initialSettings),
+        attachmentStoreProvider.overrideWithValue(attachmentStore),
         reminderServiceProvider.overrideWithValue(reminderService),
       ],
       child: const PaperNotesApp(),
     ),
   );
+
+  // Clean up attachment files whose note no longer exists (a permanent delete
+  // synced in from another device removes the row without touching this
+  // device's files). Best-effort, off the startup path.
+  unawaited(_sweepOrphanAttachments(database, attachmentStore));
+}
+
+Future<void> _sweepOrphanAttachments(
+    AppDatabase database, AttachmentStore store) {
+  // Per-directory freshness check (no snapshot): a note created while the
+  // sweep runs is seen by the query, so its files are never swept.
+  return store.sweepOrphans((noteId) async {
+    final row = await database.rawRow(noteId);
+    return row != null && !row.deleted;
+  });
 }
 
 /// Show + focus the window once it's ready (kept separate so `main` stays linear).

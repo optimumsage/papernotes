@@ -29,7 +29,16 @@ class ReminderReconciler {
 
   String _sig(Note n) => '${n.reminderType.name}|${n.reminderAt ?? 0}';
 
+  // Most recent notes list seen — replayed once the service becomes ready
+  // (init now runs concurrently with the first stream emissions).
+  List<Note> _lastSeen = const [];
+
   int get _now => DateTime.now().millisecondsSinceEpoch;
+
+  /// Re-run [reconcile] with the last notes seen. Called when
+  /// [ReminderService.whenReady] completes, in case emissions arrived while
+  /// notifications were still initializing.
+  void replay() => reconcile(_lastSeen);
 
   /// Pinned notes handled by the Android foreground service (not the per-note
   /// FLN path) — kept out of [_applied] so the two paths can't double up.
@@ -37,8 +46,9 @@ class ReminderReconciler {
       _service.usesForegroundPinned && n.reminderType == ReminderType.pinned;
 
   void reconcile(List<Note> notes) {
-    // Wait until notifications are initialized; a later stream emission (or the
-    // fireImmediately call after init) will drive the first real reconcile.
+    _lastSeen = notes;
+    // Wait until notifications are initialized; [replay] (or a later stream
+    // emission) drives the first real reconcile once init completes.
     if (!_service.ready) return;
 
     final desired = <String, Note>{

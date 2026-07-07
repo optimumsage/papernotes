@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'attachment.dart';
 import 'checklist_item.dart';
 
 enum NoteType { note, checklist }
@@ -35,6 +36,10 @@ class Note {
   final ReminderType reminderType; // none | alarm | pinned
   final int? reminderAt; // epoch ms — trigger time for ReminderType.alarm
 
+  /// Files attached to this note. Device-local: excluded from the Drive sync
+  /// payload (see [NoteAttachment]).
+  final List<NoteAttachment> attachments;
+
   const Note({
     required this.id,
     required this.type,
@@ -52,6 +57,7 @@ class Note {
     this.deletedAt,
     this.reminderType = ReminderType.none,
     this.reminderAt,
+    this.attachments = const [],
   });
 
   bool get isChecklist => type == NoteType.checklist;
@@ -59,9 +65,12 @@ class Note {
   bool get isArchived => status == NoteStatus.archived;
   bool get isTrashed => status == NoteStatus.trashed;
   bool get hasReminder => reminderType != ReminderType.none;
+  bool get hasAttachments => attachments.isNotEmpty;
 
   /// True when the note carries no user content and can be safely discarded.
+  /// An attachment counts as content.
   bool get isEmpty {
+    if (attachments.isNotEmpty) return false;
     final noTitle = title == null || title!.trim().isEmpty;
     if (isChecklist) {
       return noTitle && items.every((i) => i.text.trim().isEmpty);
@@ -87,6 +96,7 @@ class Note {
     ReminderType? reminderType,
     int? reminderAt,
     bool clearReminderAt = false,
+    List<NoteAttachment>? attachments,
   }) {
     return Note(
       id: id,
@@ -105,13 +115,15 @@ class Note {
       deletedAt: deletedAt ?? this.deletedAt,
       reminderType: reminderType ?? this.reminderType,
       reminderAt: clearReminderAt ? null : (reminderAt ?? this.reminderAt),
+      attachments: attachments ?? this.attachments,
     );
   }
 
   // ---- JSON (Drive file payload) ----
 
   /// Serialized form written to `<id>.json` in Drive. Carries every field the
-  /// sync engine needs, including the tombstone flags.
+  /// sync engine needs, including the tombstone flags. Deliberately excludes
+  /// [attachments] — their binaries only exist on this device.
   Map<String, dynamic> toJson() => {
         'id': id,
         'type': type.name,
@@ -180,4 +192,9 @@ class Note {
         .map((e) => ChecklistItem.fromJson((e as Map).cast<String, dynamic>()))
         .toList();
   }
+
+  /// Encode the attachments list for the drift `attachments` text column
+  /// (null when there are none, keeping untouched rows compact).
+  String? attachmentsToColumn() =>
+      attachments.isEmpty ? null : NoteAttachment.encodeList(attachments);
 }

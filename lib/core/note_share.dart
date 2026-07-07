@@ -16,7 +16,7 @@ String noteToShareText(Note note) {
       buffer.writeln('${item.checked ? '☑' : '☐'} $text');
     }
   } else {
-    final body = plainTextFromBody(note.body).trim();
+    final body = plainTextOfNote(note).trim();
     if (body.isNotEmpty) buffer.writeln(body);
   }
   final text = buffer.toString().trim();

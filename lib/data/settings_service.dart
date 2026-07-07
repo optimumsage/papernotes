@@ -201,6 +201,9 @@ class SettingsService {
   Future<void> setLastSyncedAt(int epochMs) =>
       _prefs.setInt(AppKeys.lastSyncedAt, epochMs);
 
+  /// Cheap read of the last-synced timestamp (no secret-store access).
+  int? get lastSyncedAt => _prefs.getInt(AppKeys.lastSyncedAt);
+
   Future<void> setClientId(String value) =>
       _prefs.setString(AppKeys.driveClientId, value);
 

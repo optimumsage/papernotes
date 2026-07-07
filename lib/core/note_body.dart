@@ -1,6 +1,31 @@
 import 'dart:convert';
 
+import '../data/models/note.dart';
 import 'note_markdown.dart';
+
+/// Note-keyed memo of extracted plain text, validated by `updatedAt`. Keying by
+/// note id (rather than body content) means a sequential scan over any number
+/// of notes only ever occupies one entry per note — a content-keyed FIFO cache
+/// degenerates to zero hits once the note count exceeds its cap, because a
+/// stable-order scan always evicts the entries the next scan needs first.
+const _maxNoteEntries = 4096;
+final Map<String, (int, String)> _noteTextCache = <String, (int, String)>{};
+
+/// Plain text of [note]'s body, cached per note. Preferred over
+/// [plainTextFromBody] wherever a [Note] is in hand (card previews, search)
+/// since the cache stays effective at any note count.
+String plainTextOfNote(Note note) {
+  final body = note.body;
+  if (body == null || body.isEmpty) return '';
+  final cached = _noteTextCache[note.id];
+  if (cached != null && cached.$1 == note.updatedAt) return cached.$2;
+  final result = _extractPlainText(body);
+  if (_noteTextCache.length >= _maxNoteEntries) {
+    _noteTextCache.remove(_noteTextCache.keys.first);
+  }
+  _noteTextCache[note.id] = (note.updatedAt, result);
+  return result;
+}
 
 /// Bounded memo cache keyed by the raw body string. Extraction is pure over its
 /// input and bodies are immutable, so the same string always maps to the same
