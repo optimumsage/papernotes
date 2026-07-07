@@ -1,5 +1,7 @@
 import '../../core/constants.dart';
+import '../attachments/attachment_store.dart';
 import '../local/database.dart';
+import '../models/attachment.dart';
 import '../models/folder.dart';
 import '../models/note.dart';
 import '../settings_service.dart';
@@ -8,6 +10,16 @@ import 'drive_client.dart';
 /// Drive file-name prefix marking a folder payload (`folder-<id>.json`). Note
 /// payloads are plain `<id>.json`, so the prefix partitions the two on listing.
 const _folderPrefix = 'folder-';
+
+/// Drive file-name prefix for an attachment binary (`attach-<attachmentId>`).
+/// These are handled by `driveFileId` from within note payloads, so they are
+/// excluded from the note/folder partition on listing.
+const _attachPrefix = 'attach-';
+
+/// Skip garbage-collecting attachment binaries newer than this — another
+/// device may have just uploaded one whose owning note this device hasn't
+/// pulled yet, so its file would look unreferenced here.
+const _attachGcSafetyWindow = Duration(hours: 1);
 
 class SyncResult {
   final int pulled;
@@ -24,11 +36,12 @@ class SyncResult {
 /// The engine is stateless between runs except for the per-row sync metadata
 /// (`driveFileId`, `remoteModifiedTime`, `dirty`) persisted in the database.
 class SyncEngine {
-  SyncEngine(this._db, this._client, this._settings);
+  SyncEngine(this._db, this._client, this._settings, this._store);
 
   final AppDatabase _db;
-  final DriveClient _client;
+  final DriveApi _client;
   final SettingsService _settings;
+  final AttachmentStore _store;
 
   bool _running = false;
 
@@ -55,11 +68,17 @@ class SyncEngine {
       }
 
       final remote = await _client.list();
-      // Partition the remote listing into note files and folder files.
-      final remoteNotes =
-          remote.where((f) => !f.noteId.startsWith(_folderPrefix)).toList();
+      // Partition the remote listing: folder payloads, note payloads, and
+      // attachment binaries (handled separately, via note `driveFileId`s).
+      final remoteNotes = remote
+          .where((f) =>
+              !f.noteId.startsWith(_folderPrefix) &&
+              !f.noteId.startsWith(_attachPrefix))
+          .toList();
       final remoteFolders =
           remote.where((f) => f.noteId.startsWith(_folderPrefix)).toList();
+      final remoteAttachments =
+          remote.where((f) => f.noteId.startsWith(_attachPrefix)).toList();
 
       final remoteById = {for (final f in remoteNotes) f.noteId: f};
       final localById = {for (final r in await _db.allRawRows()) r.id: r};
@@ -77,6 +96,8 @@ class SyncEngine {
       final pushed =
           await _pushFolders(remoteFolderById) + await _push(remoteById);
       final purged = await _purgeFolders() + await _purge();
+      // Reclaim attachment binaries no longer referenced by any note.
+      await _gcAttachments(remoteAttachments);
 
       await _settings.setLastSyncedAt(_now);
       return SyncResult(pulled, pushed, purged);
@@ -136,6 +157,7 @@ class SyncEngine {
           driveFileId: file.id,
           remoteModifiedTime: file.modifiedTime,
         );
+        await _downloadAttachments(remoteNote);
         pulled++;
       } else if (local.driveFileId == null) {
         // Local is newer (will be pushed) but we now know its file id.
@@ -157,7 +179,9 @@ class SyncEngine {
       {List<NoteRow>? rows}) async {
     var pushed = 0;
     for (final raw in rows ?? await _db.dirtyRawNoteRows()) {
-      final note = _db.noteFromRow(raw);
+      // Upload any not-yet-uploaded attachment binaries first so the note
+      // payload carries their driveFileIds.
+      final note = await _uploadAttachments(_db.noteFromRow(raw));
       final existingId = raw.driveFileId ?? remoteById[note.id]?.id;
 
       final result = existingId == null
@@ -175,6 +199,78 @@ class SyncEngine {
     return pushed;
   }
 
+  /// Upload each attachment binary that has no `driveFileId` yet (and whose
+  /// local file exists), recording the returned id back onto the note. Records
+  /// the ids via [AppDatabase.setAttachments] (no `updatedAt`/`dirty` change)
+  /// so it never triggers a re-sync loop.
+  Future<Note> _uploadAttachments(Note note) async {
+    if (note.attachments.isEmpty) return note;
+    var changed = false;
+    final updated = <NoteAttachment>[];
+    for (final att in note.attachments) {
+      final file = _store.fileFor(note.id, att);
+      if (att.driveFileId != null || !await file.exists()) {
+        updated.add(att);
+        continue;
+      }
+      try {
+        final remote =
+            await _client.createBinary('$_attachPrefix${att.id}', await file.readAsBytes());
+        updated.add(att.copyWith(driveFileId: remote.id));
+        changed = true;
+      } catch (_) {
+        updated.add(att); // best-effort; retried next sync
+      }
+    }
+    if (!changed) return note;
+    await _db.setAttachments(note.id, updated);
+    return note.copyWith(attachments: updated);
+  }
+
+  /// Fetch any attachment binaries referenced by [note] that aren't already on
+  /// this device. Best-effort — a failed download just leaves a missing file
+  /// (shown as a broken tile) to retry on the next sync.
+  Future<void> _downloadAttachments(Note note) async {
+    for (final att in note.attachments) {
+      final fid = att.driveFileId;
+      if (fid == null) continue;
+      if (await _store.exists(note.id, att)) continue;
+      try {
+        await _store.writeBytes(note.id, att, await _client.downloadBytes(fid));
+      } catch (_) {
+        // Retried next full sync.
+      }
+    }
+  }
+
+  /// Delete attachment binaries no longer referenced by any note. Guards
+  /// against a concurrent-upload race by skipping files newer than
+  /// [_attachGcSafetyWindow] (their owning note may not be pulled here yet).
+  Future<void> _gcAttachments(List<RemoteFile> remoteAttachments) async {
+    if (remoteAttachments.isEmpty) return;
+    // Every attachment id referenced by any local row (tombstones included, so
+    // a delete pending sync still protects its files until it's purged).
+    final referenced = <String>{};
+    for (final row in await _db.allRawRows()) {
+      for (final att in NoteAttachment.decodeList(row.attachments)) {
+        referenced.add(att.id);
+      }
+    }
+    final cutoff =
+        DateTime.now().toUtc().subtract(_attachGcSafetyWindow);
+    for (final file in remoteAttachments) {
+      final attId = file.noteId.substring(_attachPrefix.length);
+      if (referenced.contains(attId)) continue;
+      final modified = DateTime.tryParse(file.modifiedTime ?? '');
+      if (modified != null && modified.toUtc().isAfter(cutoff)) continue;
+      try {
+        await _client.deleteFile(file.id);
+      } catch (_) {
+        // Retried next full sync.
+      }
+    }
+  }
+
   /// Hard-delete tombstones (local + remote) once retention has elapsed.
   Future<int> _purge() async {
     final cutoff = _now - AppConfig.tombstoneRetention.inMilliseconds;
@@ -188,6 +284,17 @@ class SyncEngine {
           // Already gone remotely — fine to drop locally.
         }
       }
+      // Delete the note's attachment binaries (Drive + any local leftovers).
+      for (final att in note.attachments) {
+        if (att.driveFileId != null) {
+          try {
+            await _client.deleteFile(att.driveFileId!);
+          } catch (_) {
+            // Already gone remotely.
+          }
+        }
+      }
+      await _store.removeAllFor(note.id);
       await _db.hardDelete(note.id);
     }
     return expired.length;

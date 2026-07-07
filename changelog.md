@@ -3,6 +3,30 @@
 All notable changes to PaperNote are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-07-07
+
+### Added
+- **Attachments now sync across devices.** Files attached on one device upload
+  to Google Drive (into the same private appDataFolder as notes) and download
+  automatically on your other signed-in devices. Each note payload carries its
+  attachments' Drive references; binaries are fetched on pull when they aren't
+  already present locally. Removing an attachment (or permanently deleting its
+  note) reclaims the Drive copy during the next full sync. Previously
+  attachments were device-local — this replaces that behaviour.
+
+### Fixed
+- **Document scanner no longer crashes on Android.** Tapping **Scan document**
+  threw `PlatformException(… NullPointerException)` because release
+  minification (R8) stripped/renamed ML Kit's internal components, breaking its
+  reflection-based initialization. Minification is now disabled for the release
+  build, so ML Kit initializes correctly. (The APK is a few MB larger; for a
+  Flutter app the engine dominates, so the difference is negligible.)
+
+### Notes
+- Attachment binaries count against your Google Drive storage, and large files
+  transfer over your connection on each device — keep that in mind for big
+  scans/videos.
+
 ## [0.8.0] - 2026-07-07
 
 ### Added

@@ -8,12 +8,12 @@ enum AttachmentKind { image, pdf, other }
 
 /// Metadata for one file attached to a note. The binary lives on disk in the
 /// app's attachment store (`attachments/<noteId>/<fileName>`); the note row
-/// only carries this metadata as JSON.
+/// (and the Drive note payload) carry this metadata as JSON.
 ///
-/// Attachments are **local to the device**: they are deliberately excluded
-/// from the Drive sync payload (binaries would bloat appDataFolder and the
-/// metadata would dangle on other devices), and the sync engine preserves the
-/// local attachments column when applying remote note updates.
+/// Attachments sync across devices: the binary is uploaded to Drive's
+/// appDataFolder as its own file, and [driveFileId] records that file so other
+/// devices can download it. A null [driveFileId] means the binary has not been
+/// uploaded yet (freshly imported on this device, or upload pending).
 class NoteAttachment {
   final String id;
 
@@ -29,13 +29,26 @@ class NoteAttachment {
 
   final int createdAt; // epoch ms
 
+  /// Drive file id of the uploaded binary, or null before it is pushed.
+  final String? driveFileId;
+
   const NoteAttachment({
     required this.id,
     required this.name,
     required this.fileName,
     required this.size,
     required this.createdAt,
+    this.driveFileId,
   });
+
+  NoteAttachment copyWith({String? driveFileId}) => NoteAttachment(
+        id: id,
+        name: name,
+        fileName: fileName,
+        size: size,
+        createdAt: createdAt,
+        driveFileId: driveFileId ?? this.driveFileId,
+      );
 
   static const _imageExts = {
     '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic', '.heif'
@@ -54,6 +67,7 @@ class NoteAttachment {
         'fileName': fileName,
         'size': size,
         'createdAt': createdAt,
+        'driveFileId': driveFileId,
       };
 
   factory NoteAttachment.fromJson(Map<String, dynamic> json) => NoteAttachment(
@@ -62,6 +76,7 @@ class NoteAttachment {
         fileName: json['fileName'] as String,
         size: (json['size'] as num?)?.toInt() ?? 0,
         createdAt: (json['createdAt'] as num?)?.toInt() ?? 0,
+        driveFileId: json['driveFileId'] as String?,
       );
 
   /// Encode a list for storage in the drift `attachments` text column.

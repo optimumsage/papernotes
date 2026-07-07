@@ -122,8 +122,8 @@ class Note {
   // ---- JSON (Drive file payload) ----
 
   /// Serialized form written to `<id>.json` in Drive. Carries every field the
-  /// sync engine needs, including the tombstone flags. Deliberately excludes
-  /// [attachments] — their binaries only exist on this device.
+  /// sync engine needs, including the tombstone flags. [attachments] carry
+  /// their `driveFileId` so other devices can fetch the binaries.
   Map<String, dynamic> toJson() => {
         'id': id,
         'type': type.name,
@@ -141,6 +141,7 @@ class Note {
         'deletedAt': deletedAt,
         'reminderType': reminderType.name,
         'reminderAt': reminderAt,
+        'attachments': attachments.map((a) => a.toJson()).toList(),
       };
 
   String encode() => jsonEncode(toJson());
@@ -176,6 +177,9 @@ class Note {
         orElse: () => ReminderType.none,
       ),
       reminderAt: (json['reminderAt'] as num?)?.toInt(),
+      attachments: ((json['attachments'] as List?) ?? const [])
+          .map((e) => NoteAttachment.fromJson((e as Map).cast<String, dynamic>()))
+          .toList(),
     );
   }
 

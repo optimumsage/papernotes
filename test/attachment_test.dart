@@ -47,14 +47,22 @@ void main() {
       expect(withAtt.isEmpty, isFalse);
     });
 
-    test('attachments are excluded from the Drive sync payload', () {
+    test('attachments (with driveFileId) round-trip through the Drive payload',
+        () {
       final note = const Note(
               id: 'n', type: NoteType.note, createdAt: 1, updatedAt: 1)
           .copyWith(attachments: const [
         NoteAttachment(
-            id: 'a', name: 'f.pdf', fileName: 'a.pdf', size: 1, createdAt: 1),
+            id: 'a',
+            name: 'f.pdf',
+            fileName: 'a.pdf',
+            size: 1,
+            createdAt: 1,
+            driveFileId: 'drive-123'),
       ]);
-      expect(note.toJson().containsKey('attachments'), isFalse);
+      final decoded = Note.decode(note.encode());
+      expect(decoded.attachments.single.id, 'a');
+      expect(decoded.attachments.single.driveFileId, 'drive-123');
     });
   });
 
@@ -140,22 +148,67 @@ void main() {
       expect(loaded.attachments.single.name, 'f.pdf');
     });
 
-    test('applyRemote preserves the local attachments column', () async {
-      final local = const Note(
-              id: 'n1', type: NoteType.note, body: 'old', createdAt: 1, updatedAt: 1)
-          .copyWith(attachments: const [att]);
-      await db.upsertNote(local, dirty: false);
+    test('applyRemote applies the remote attachments list', () async {
+      await db.upsertNote(
+        const Note(
+                id: 'n1', type: NoteType.note, body: 'old', createdAt: 1, updatedAt: 1)
+            .copyWith(attachments: const [att]),
+        dirty: false,
+      );
 
-      // Remote payloads never carry attachments; applying one must not wipe
-      // the device-local list.
-      const remote = Note(
-          id: 'n1', type: NoteType.note, body: 'new', createdAt: 1, updatedAt: 2);
+      // A newer remote note carries its own attachments (with driveFileIds) —
+      // now authoritative, so the local column is replaced.
+      final remote = const Note(
+              id: 'n1', type: NoteType.note, body: 'new', createdAt: 1, updatedAt: 2)
+          .copyWith(attachments: const [
+        NoteAttachment(
+            id: 'a2',
+            name: 'g.pdf',
+            fileName: 'a2.pdf',
+            size: 5,
+            createdAt: 2,
+            driveFileId: 'drive-a2'),
+      ]);
       await db.applyRemote(remote,
           driveFileId: 'file1', remoteModifiedTime: 't1');
 
       final merged = await db.getNote('n1');
       expect(merged!.body, 'new');
-      expect(merged.attachments.single.id, 'a1');
+      expect(merged.attachments.single.id, 'a2');
+      expect(merged.attachments.single.driveFileId, 'drive-a2');
+    });
+
+    test('upsertNote preserves an out-of-band driveFileId against a stale save',
+        () async {
+      // Attachment saved by the editor without a driveFileId yet.
+      await db.upsertNote(
+        const Note(
+                id: 'n1', type: NoteType.note, body: 'b', createdAt: 1, updatedAt: 1)
+            .copyWith(attachments: const [att]),
+        dirty: true,
+      );
+      // Sync uploads the binary and records its Drive id out of band.
+      await db.setAttachments('n1', const [
+        NoteAttachment(
+            id: 'a1',
+            name: 'f.pdf',
+            fileName: 'a1.pdf',
+            size: 3,
+            createdAt: 1,
+            driveFileId: 'drive-a1'),
+      ]);
+      // The editor re-saves its stale snapshot (attachment still driveFileId-less).
+      await db.upsertNote(
+        const Note(
+                id: 'n1', type: NoteType.note, body: 'edited', createdAt: 1, updatedAt: 2)
+            .copyWith(attachments: const [att]),
+        dirty: true,
+      );
+
+      final loaded = await db.getNote('n1');
+      expect(loaded!.body, 'edited');
+      // The driveFileId must survive — otherwise the binary re-uploads as a dup.
+      expect(loaded.attachments.single.driveFileId, 'drive-a1');
     });
   });
 }

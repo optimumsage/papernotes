@@ -71,6 +71,7 @@ final syncEngineProvider = Provider<SyncEngine>(
     ref.watch(databaseProvider),
     ref.watch(driveClientProvider),
     ref.watch(settingsServiceProvider),
+    ref.watch(attachmentStoreProvider),
   ),
 );
 

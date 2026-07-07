@@ -62,6 +62,19 @@ class AttachmentStore {
     );
   }
 
+  /// True when the attachment's binary is present on this device.
+  Future<bool> exists(String noteId, NoteAttachment attachment) =>
+      fileFor(noteId, attachment).exists();
+
+  /// Write a downloaded binary to the note's attachment directory (used by the
+  /// sync engine when pulling an attachment created on another device).
+  Future<void> writeBytes(
+      String noteId, NoteAttachment attachment, List<int> bytes) async {
+    final dir = dirFor(noteId);
+    await dir.create(recursive: true);
+    await fileFor(noteId, attachment).writeAsBytes(bytes, flush: true);
+  }
+
   /// Delete one attachment's binary. Missing files are fine (already gone).
   Future<void> remove(String noteId, NoteAttachment attachment) async {
     try {

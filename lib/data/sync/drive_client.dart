@@ -37,9 +37,22 @@ class RemoteFile {
       : name;
 }
 
+/// The Drive operations the [SyncEngine] depends on. Extracted so the engine
+/// can be driven against an in-memory fake in tests without real network/auth.
+abstract interface class DriveApi {
+  Future<List<RemoteFile>> list();
+  Future<Map<String, dynamic>> download(String fileId);
+  Future<RemoteFile> create(String noteId, String content);
+  Future<RemoteFile> update(String fileId, String noteId, String content);
+  Future<void> deleteFile(String fileId);
+  Future<String?> modifiedTime(String fileId);
+  Future<RemoteFile> createBinary(String name, List<int> bytes);
+  Future<List<int>> downloadBytes(String fileId);
+}
+
 /// Thin wrapper over Drive v3 scoped to the hidden `appDataFolder`. Every note
 /// is one `<noteId>.json` file; filenames are UUIDs so they never collide.
-class DriveClient {
+class DriveClient implements DriveApi {
   DriveClient(DriveAuth auth) : _http = _AuthClient(auth);
 
   final _AuthClient _http;
@@ -48,6 +61,7 @@ class DriveClient {
   static const _space = 'appDataFolder';
 
   /// Lists every note file in the app folder (handles pagination).
+  @override
   Future<List<RemoteFile>> list() async {
     final files = <RemoteFile>[];
     String? pageToken;
@@ -69,6 +83,7 @@ class DriveClient {
   }
 
   /// Downloads and decodes the JSON body of a file.
+  @override
   Future<Map<String, dynamic>> download(String fileId) async {
     final media = await _api.files.get(
       fileId,
@@ -84,6 +99,7 @@ class DriveClient {
   }
 
   /// Creates a new file in the app folder. Returns (fileId, modifiedTime).
+  @override
   Future<RemoteFile> create(String noteId, String content) async {
     final metadata = drive.File()
       ..name = '$noteId.json'
@@ -98,6 +114,7 @@ class DriveClient {
   }
 
   /// Overwrites an existing file's content. Returns the new modifiedTime.
+  @override
   Future<RemoteFile> update(String fileId, String noteId, String content) async {
     final updated = await _api.files.update(
       drive.File(),
@@ -109,10 +126,44 @@ class DriveClient {
         updated.id!, '$noteId.json', updated.modifiedTime?.toIso8601String());
   }
 
+  /// Uploads a raw binary (an attachment) to the app folder under [name].
+  /// Returns its Drive file id + modifiedTime.
+  @override
+  Future<RemoteFile> createBinary(String name, List<int> bytes) async {
+    final metadata = drive.File()
+      ..name = name
+      ..parents = [_space];
+    final media = drive.Media(Stream.value(bytes), bytes.length,
+        contentType: 'application/octet-stream');
+    final created = await _api.files.create(
+      metadata,
+      uploadMedia: media,
+      $fields: 'id, name, modifiedTime',
+    );
+    return RemoteFile(
+        created.id!, created.name!, created.modifiedTime?.toIso8601String());
+  }
+
+  /// Downloads a file's raw bytes (an attachment binary).
+  @override
+  Future<List<int>> downloadBytes(String fileId) async {
+    final media = await _api.files.get(
+      fileId,
+      downloadOptions: drive.DownloadOptions.fullMedia,
+    ) as drive.Media;
+    final bytes = BytesBuilder(copy: false);
+    await for (final chunk in media.stream) {
+      bytes.add(chunk);
+    }
+    return bytes.takeBytes();
+  }
+
+  @override
   Future<void> deleteFile(String fileId) => _api.files.delete(fileId);
 
   /// Fetches just a file's current modifiedTime (one cheap metadata GET, no
   /// content). Returns null when the file no longer exists remotely.
+  @override
   Future<String?> modifiedTime(String fileId) async {
     try {
       final file =

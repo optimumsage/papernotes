@@ -144,8 +144,32 @@ class AppDatabase extends _$AppDatabase {
 
   // ---- Mutations ----
 
-  Future<void> upsertNote(Note note, {required bool dirty}) {
-    return into(notes).insertOnConflictUpdate(_toCompanion(note, dirty: dirty));
+  Future<void> upsertNote(Note note, {required bool dirty}) async {
+    // The sync engine records each attachment's uploaded `driveFileId` via
+    // [setAttachments], out of band from whatever note snapshot a caller (e.g.
+    // the open editor) is holding. Carry those ids forward so a stale save
+    // can't wipe them and force a duplicate re-upload.
+    final merged = await _withPreservedDriveIds(note);
+    await into(notes)
+        .insertOnConflictUpdate(_toCompanion(merged, dirty: dirty));
+  }
+
+  Future<Note> _withPreservedDriveIds(Note note) async {
+    if (note.attachments.every((a) => a.driveFileId != null)) return note;
+    final existing = await (select(notes)..where((t) => t.id.equals(note.id)))
+        .getSingleOrNull();
+    if (existing == null) return note;
+    final byId = {
+      for (final a in NoteAttachment.decodeList(existing.attachments))
+        a.id: a.driveFileId,
+    };
+    final attachments = [
+      for (final a in note.attachments)
+        a.driveFileId == null && byId[a.id] != null
+            ? a.copyWith(driveFileId: byId[a.id])
+            : a,
+    ];
+    return note.copyWith(attachments: attachments);
   }
 
   Future<void> hardDelete(String id) {
@@ -196,9 +220,10 @@ class AppDatabase extends _$AppDatabase {
   }
 
   /// Apply a note that came down from Drive. Preserves the supplied sync
-  /// metadata and marks the row clean (it already matches the remote).
-  /// The `attachments` column is left untouched: attachments are device-local
-  /// (never in the Drive payload), so a remote update must not wipe them.
+  /// metadata and marks the row clean (it already matches the remote). The
+  /// remote attachments list (with each binary's `driveFileId`) is applied so
+  /// this device knows what to download; the sync engine fetches any missing
+  /// binaries afterwards.
   Future<void> applyRemote(
     Note note, {
     required String driveFileId,
@@ -208,7 +233,19 @@ class AppDatabase extends _$AppDatabase {
       _toCompanion(note, dirty: false).copyWith(
         driveFileId: Value(driveFileId),
         remoteModifiedTime: Value(remoteModifiedTime),
-        attachments: const Value.absent(),
+      ),
+    );
+  }
+
+  /// Overwrite just the `attachments` column (used by the sync engine to record
+  /// the uploaded binaries' `driveFileId`s). Deliberately leaves `updatedAt`
+  /// and `dirty` untouched so it never triggers a re-sync loop.
+  Future<void> setAttachments(String id, List<NoteAttachment> attachments) {
+    return (update(notes)..where((t) => t.id.equals(id))).write(
+      NotesCompanion(
+        attachments: Value(
+          attachments.isEmpty ? null : NoteAttachment.encodeList(attachments),
+        ),
       ),
     );
   }

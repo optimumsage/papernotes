@@ -55,6 +55,16 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            // Keep R8 off. ML Kit's document scanner resolves its internal
+            // components (e.g. SharedPrefManager) via Firebase-components
+            // reflection driven by class-name strings; shrinking/obfuscation
+            // strips or renames those, so `GmsDocumentScanning.getClient()`
+            // throws NullPointerException at runtime in a minified release.
+            // The APK-size win is negligible for a Flutter app (the engine and
+            // native libs dominate), so disabling minification is the safe,
+            // reflection-proof choice.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }
