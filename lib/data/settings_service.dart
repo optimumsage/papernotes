@@ -35,6 +35,11 @@ class AppSettings {
   final bool encryptionEnabled; // notes encrypted at rest + in Drive sync
   final String? encryptionKeyFingerprint; // detects a changed master key
 
+  // App lock (privacy gate, independent of encryption)
+  final bool appLockEnabled; // require PIN/biometric to open the app
+  final bool appLockBiometricEnabled; // unlock with fingerprint / Touch ID
+  final int appLockAutoLockMinutes; // 0 = until app restart
+
   const AppSettings({
     this.syncEnabled = false,
     this.themeMode = ThemeMode.system,
@@ -58,6 +63,9 @@ class AppSettings {
     this.rightSwipeAction = AppConfig.defaultRightSwipe,
     this.encryptionEnabled = false,
     this.encryptionKeyFingerprint,
+    this.appLockEnabled = false,
+    this.appLockBiometricEnabled = false,
+    this.appLockAutoLockMinutes = AppConfig.defaultAutoLockMinutes,
   });
 
   bool get isConfigured =>
@@ -86,6 +94,9 @@ class AppSettings {
     SwipeAction? rightSwipeAction,
     bool? encryptionEnabled,
     String? encryptionKeyFingerprint,
+    bool? appLockEnabled,
+    bool? appLockBiometricEnabled,
+    int? appLockAutoLockMinutes,
   }) {
     return AppSettings(
       syncEnabled: syncEnabled ?? this.syncEnabled,
@@ -111,6 +122,11 @@ class AppSettings {
       encryptionEnabled: encryptionEnabled ?? this.encryptionEnabled,
       encryptionKeyFingerprint:
           encryptionKeyFingerprint ?? this.encryptionKeyFingerprint,
+      appLockEnabled: appLockEnabled ?? this.appLockEnabled,
+      appLockBiometricEnabled:
+          appLockBiometricEnabled ?? this.appLockBiometricEnabled,
+      appLockAutoLockMinutes:
+          appLockAutoLockMinutes ?? this.appLockAutoLockMinutes,
     );
   }
 }
@@ -161,6 +177,11 @@ class SettingsService {
       encryptionEnabled: _prefs.getBool(AppKeys.encryptionEnabled) ?? false,
       encryptionKeyFingerprint:
           _prefs.getString(AppKeys.encryptionKeyFingerprint),
+      appLockEnabled: _prefs.getBool(AppKeys.appLockEnabled) ?? false,
+      appLockBiometricEnabled:
+          _prefs.getBool(AppKeys.appLockBiometricEnabled) ?? false,
+      appLockAutoLockMinutes: _prefs.getInt(AppKeys.appLockAutoLockMinutes) ??
+          AppConfig.defaultAutoLockMinutes,
     );
   }
 
@@ -262,6 +283,29 @@ class SettingsService {
       await _secure.delete(AppKeys.encryptionMasterKey);
     } else {
       await _secure.write(AppKeys.encryptionMasterKey, value);
+    }
+  }
+
+  // ---- App lock ----
+
+  Future<void> setAppLockEnabled(bool value) =>
+      _prefs.setBool(AppKeys.appLockEnabled, value);
+
+  Future<void> setAppLockBiometricEnabled(bool value) =>
+      _prefs.setBool(AppKeys.appLockBiometricEnabled, value);
+
+  Future<void> setAppLockAutoLockMinutes(int value) =>
+      _prefs.setInt(AppKeys.appLockAutoLockMinutes, value);
+
+  /// The stored `salt:hex` PIN hash, or null if no PIN is set. Shares the one
+  /// [SecureStore] instance with the other secrets so writes never clobber.
+  Future<String?> readAppLockPinHash() => _secure.read(AppKeys.appLockPinHash);
+
+  Future<void> setAppLockPinHash(String? value) async {
+    if (value == null) {
+      await _secure.delete(AppKeys.appLockPinHash);
+    } else {
+      await _secure.write(AppKeys.appLockPinHash, value);
     }
   }
 

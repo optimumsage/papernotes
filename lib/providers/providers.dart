@@ -9,6 +9,7 @@ import '../core/note_sort.dart';
 import '../core/platform.dart';
 import '../core/swipe_action.dart';
 import '../data/attachments/attachment_store.dart';
+import '../data/auth/app_lock_service.dart';
 import '../data/crypto/encryption_service.dart';
 import '../data/local/database.dart';
 import '../data/models/folder.dart';
@@ -86,6 +87,8 @@ final syncEngineProvider = Provider<SyncEngine>(
 );
 
 final updateServiceProvider = Provider<UpdateService>((_) => UpdateService());
+
+final appLockServiceProvider = Provider<AppLockService>((_) => AppLockService());
 
 // ---- Reminders ----
 
@@ -317,6 +320,23 @@ class SettingsController extends Notifier<AppSettings> {
     await _service.setEncryptionEnabled(enabled);
     await _service.setEncryptionKeyFingerprint(fingerprint);
     await reload();
+  }
+
+  // ---- App lock ----
+
+  Future<void> setAppLockEnabled(bool value) async {
+    await _service.setAppLockEnabled(value);
+    state = state.copyWith(appLockEnabled: value);
+  }
+
+  Future<void> setAppLockBiometricEnabled(bool value) async {
+    await _service.setAppLockBiometricEnabled(value);
+    state = state.copyWith(appLockBiometricEnabled: value);
+  }
+
+  Future<void> setAppLockAutoLockMinutes(int value) async {
+    await _service.setAppLockAutoLockMinutes(value);
+    state = state.copyWith(appLockAutoLockMinutes: value);
   }
 
   Future<void> setCredentials(String clientId, String clientSecret) async {
@@ -608,4 +628,82 @@ class EncryptionController extends Notifier<EncryptionStatus> {
       // Retried on the next sync.
     }
   }
+}
+
+// ---- App-lock controller ----
+
+/// Snapshot of the app-lock (privacy) gate. [locked] drives the full-screen
+/// [AppLockScreen]. Independent of encryption — the two gates stack.
+class AppLockStatus {
+  final bool enabled;
+  final bool locked;
+  const AppLockStatus({required this.enabled, required this.locked});
+}
+
+final appLockControllerProvider =
+    NotifierProvider<AppLockController, AppLockStatus>(AppLockController.new);
+
+class AppLockController extends Notifier<AppLockStatus> {
+  AppLockService get _service => ref.read(appLockServiceProvider);
+  SettingsService get _settingsService => ref.read(settingsServiceProvider);
+  SettingsController get _settings =>
+      ref.read(settingsControllerProvider.notifier);
+
+  @override
+  AppLockStatus build() {
+    // Read (not watch) the persisted flag: `enabled`/`locked` are driven
+    // explicitly by this controller thereafter, so build() runs once and its
+    // state persists for the app's lifetime. Cold start begins locked when the
+    // lock is on, until the user authenticates.
+    final enabled = ref.read(settingsControllerProvider).appLockEnabled;
+    return AppLockStatus(enabled: enabled, locked: enabled);
+  }
+
+  /// Turn the lock on with a freshly-chosen [pin]. Stays unlocked (the user just
+  /// set it up in Settings).
+  Future<void> enableWithPin(String pin) async {
+    await _settingsService
+        .setAppLockPinHash(AppLockService.hashPin(pin, AppLockService.newSalt()));
+    await _settings.setAppLockEnabled(true);
+    state = const AppLockStatus(enabled: true, locked: false);
+  }
+
+  /// Replace the PIN (caller must have already verified the current one).
+  Future<void> changePin(String pin) => _settingsService
+      .setAppLockPinHash(AppLockService.hashPin(pin, AppLockService.newSalt()));
+
+  /// Whether [pin] matches the stored hash.
+  Future<bool> verifyPin(String pin) async =>
+      AppLockService.verifyPin(pin, await _settingsService.readAppLockPinHash());
+
+  /// Prompt for biometric auth; on success, unlock the gate.
+  Future<bool> unlockWithBiometric() async {
+    final ok = await _service.authenticate('Unlock PaperNotes');
+    if (ok) unlock();
+    return ok;
+  }
+
+  Future<void> setBiometricEnabled(bool value) =>
+      _settings.setAppLockBiometricEnabled(value);
+
+  /// Turn the lock off entirely (caller must have verified the PIN/biometric).
+  /// Clears the stored PIN and biometric preference. Clear the `enabled` flag
+  /// FIRST: if the process dies mid-way, the app boots unlocked rather than
+  /// "enabled with no PIN" (which would be an unrecoverable lockout).
+  Future<void> disable() async {
+    await _settings.setAppLockEnabled(false);
+    await _settings.setAppLockBiometricEnabled(false);
+    await _settingsService.setAppLockPinHash(null);
+    state = const AppLockStatus(enabled: false, locked: false);
+  }
+
+  /// Lock the app now (manual "Lock now" or an auto-lock trigger). No-op when
+  /// the lock is disabled.
+  void lock() {
+    if (!state.enabled) return;
+    state = AppLockStatus(enabled: state.enabled, locked: true);
+  }
+
+  void unlock() =>
+      state = AppLockStatus(enabled: state.enabled, locked: false);
 }

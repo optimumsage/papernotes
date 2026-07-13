@@ -10,6 +10,10 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
+    <!-- App-lock biometric unlock (fingerprint). USE_FINGERPRINT covers
+         pre-Android-9 devices that local_auth still supports. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
+    <uses-permission android:name="android.permission.USE_FINGERPRINT"/>
     <!-- Locked "pinned" reminders run as a foreground service so the OS keeps
          their notification un-swipeable (even on Android 14+). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>

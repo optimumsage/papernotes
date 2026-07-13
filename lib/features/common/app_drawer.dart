@@ -47,6 +47,8 @@ class AppDrawerContent extends ConsumerWidget {
     final folders = ref.watch(foldersProvider).value ?? const [];
     final selectedFolder = ref.watch(selectedFolderProvider);
     final onNotes = current == '/';
+    final appLockEnabled =
+        ref.watch(settingsControllerProvider.select((s) => s.appLockEnabled));
 
     return SafeArea(
       child: Column(
@@ -144,6 +146,15 @@ class AppDrawerContent extends ConsumerWidget {
             ),
           ),
           const Divider(height: 1),
+          if (appLockEnabled)
+            ListTile(
+              leading: const Icon(Icons.lock_outline),
+              title: const Text('Lock now'),
+              onTap: () {
+                if (inDrawer) Navigator.pop(context);
+                ref.read(appLockControllerProvider.notifier).lock();
+              },
+            ),
           ListTile(
             leading: const Icon(Icons.settings_outlined),
             title: const Text('Settings'),

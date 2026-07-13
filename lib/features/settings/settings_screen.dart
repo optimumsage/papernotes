@@ -9,6 +9,7 @@ import '../../core/swipe_action.dart';
 import '../../data/crypto/encryption_service.dart';
 import '../../data/update_service.dart';
 import '../../providers/providers.dart';
+import '../app_lock/pin_dialog.dart';
 import '../editor/color_picker.dart';
 import '../encryption/master_key_dialog.dart';
 
@@ -34,6 +35,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   String? _version;
   bool _checkingUpdate = false;
   bool _encrypting = false;
+  bool _appLockBusy = false;
+  bool _biometricAvailable = false;
 
   @override
   void initState() {
@@ -42,6 +45,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ref.read(settingsControllerProvider).clientId ?? '';
     ref.read(updateServiceProvider).currentVersion().then((v) {
       if (mounted) setState(() => _version = v);
+    });
+    // Whether this device can offer biometric unlock (Android/macOS only).
+    ref.read(appLockServiceProvider).isBiometricAvailable().then((v) {
+      if (mounted) setState(() => _biometricAvailable = v);
     });
   }
 
@@ -249,6 +256,78 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     } finally {
       if (mounted) setState(() => _encrypting = false);
     }
+  }
+
+  // ---- App lock ----
+
+  Future<void> _enableAppLock() async {
+    final pin = await showSetPinDialog(context, title: 'Set an app-lock PIN');
+    if (pin == null || !mounted) return;
+    setState(() => _appLockBusy = true);
+    try {
+      await ref.read(appLockControllerProvider.notifier).enableWithPin(pin);
+      if (mounted) _snack('App lock enabled');
+    } finally {
+      if (mounted) setState(() => _appLockBusy = false);
+    }
+  }
+
+  Future<void> _disableAppLock() async {
+    final notifier = ref.read(appLockControllerProvider.notifier);
+    final ok = await showVerifyPinDialog(
+      context,
+      verify: notifier.verifyPin,
+      title: 'Enter PIN to turn off',
+    );
+    if (!ok || !mounted) return;
+    setState(() => _appLockBusy = true);
+    try {
+      await notifier.disable();
+      if (mounted) _snack('App lock turned off');
+    } finally {
+      if (mounted) setState(() => _appLockBusy = false);
+    }
+  }
+
+  Future<void> _changePin() async {
+    final notifier = ref.read(appLockControllerProvider.notifier);
+    final verified = await showVerifyPinDialog(
+      context,
+      verify: notifier.verifyPin,
+      title: 'Enter current PIN',
+    );
+    if (!verified || !mounted) return;
+    final pin = await showSetPinDialog(context, title: 'Set a new PIN');
+    if (pin == null || !mounted) return;
+    await notifier.changePin(pin);
+    if (mounted) _snack('PIN changed');
+  }
+
+  Future<void> _toggleBiometric(bool value) async {
+    final notifier = ref.read(appLockControllerProvider.notifier);
+    if (!value) {
+      await notifier.setBiometricEnabled(false);
+      return;
+    }
+    // Verify the hardware actually authenticates before turning it on, so the
+    // user isn't left with a dead toggle.
+    final label = ref.read(appLockServiceProvider).biometricLabel();
+    final ok = await ref
+        .read(appLockServiceProvider)
+        .authenticate('Confirm $label to enable it');
+    if (!ok) {
+      if (mounted) _snack('Could not verify $label');
+      return;
+    }
+    await notifier.setBiometricEnabled(true);
+  }
+
+  /// Human label for an auto-lock interval in minutes (0 = until app restart).
+  String _autoLockLabel(int minutes) {
+    if (minutes == AppConfig.appLockRestartSentinel) return 'Until app restart';
+    if (minutes < 60) return '$minutes min';
+    final hours = minutes ~/ 60;
+    return hours == 1 ? '1 hour' : '$hours hours';
   }
 
   @override
@@ -571,6 +650,66 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         'Generate a new key; other devices will re-ask for it'),
                     onTap: _encrypting ? null : _changeMasterKey,
                   ),
+              ],
+            ),
+          ),
+
+          // ---- App lock ----
+          const SizedBox(height: 16),
+          _sectionLabel(context, 'App lock'),
+          Card(
+            child: Column(
+              children: [
+                SwitchListTile(
+                  title: const Text('App lock'),
+                  subtitle: Text(settings.appLockEnabled
+                      ? 'A PIN is required to open PaperNotes'
+                      : 'Require a PIN (and optional biometrics) to open the app'),
+                  value: settings.appLockEnabled,
+                  onChanged: _appLockBusy
+                      ? null
+                      : (v) => v ? _enableAppLock() : _disableAppLock(),
+                ),
+                if (settings.appLockEnabled) ...[
+                  if (_biometricAvailable)
+                    SwitchListTile(
+                      title: Text(
+                          'Unlock with ${ref.read(appLockServiceProvider).biometricLabel()}'),
+                      subtitle: const Text('Falls back to your PIN'),
+                      value: settings.appLockBiometricEnabled,
+                      onChanged: _appLockBusy ? null : _toggleBiometric,
+                    ),
+                  ListTile(
+                    leading: const Icon(Icons.pin_outlined),
+                    title: const Text('Change PIN'),
+                    onTap: _appLockBusy ? null : _changePin,
+                  ),
+                  ListTile(
+                    title: const Text('Auto-lock'),
+                    subtitle: const Text('Lock after being away this long'),
+                    trailing: DropdownButton<int>(
+                      value: settings.appLockAutoLockMinutes,
+                      underline: const SizedBox.shrink(),
+                      items: [
+                        for (final m in [
+                          ...AppConfig.autoLockOptions,
+                          AppConfig.appLockRestartSentinel,
+                        ])
+                          DropdownMenuItem(
+                              value: m, child: Text(_autoLockLabel(m))),
+                      ],
+                      onChanged: (v) => v == null
+                          ? null
+                          : ctrl.setAppLockAutoLockMinutes(v),
+                    ),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.lock_outline),
+                    title: const Text('Lock now'),
+                    onTap: () =>
+                        ref.read(appLockControllerProvider.notifier).lock(),
+                  ),
+                ],
               ],
             ),
           ),

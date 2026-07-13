@@ -3,6 +3,25 @@
 All notable changes to PaperNote are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] - 2026-07-13
+
+### Added
+- **App lock.** Protect PaperNotes behind a privacy gate, separate from note
+  encryption. Turn it on in **Settings → App lock** and set a **PIN** (available
+  on every platform). On devices with biometric hardware you can additionally
+  **unlock with your fingerprint (Android)** or **Touch ID (macOS)** — it falls
+  back to the PIN, and the option is hidden when no biometric is enrolled.
+  Windows uses the PIN.
+- **Manual & automatic locking.** A **Lock now** action (in the side menu and in
+  Settings) locks the app immediately. **Auto-lock** re-locks the app after it
+  has been in the background for a chosen interval — 1, 2, 5, 10, 30 minutes;
+  1, 2, 4, 8, 12, 24 hours; or **Until app restart**. With App lock on, the app
+  also locks on every cold start.
+
+### Notes
+- There is **no PIN recovery** — a forgotten PIN cannot be reset from inside the
+  app, so keep it safe. Turning App lock off requires entering your current PIN.
+
 ## [0.9.0] - 2026-07-07
 
 ### Added

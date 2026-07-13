@@ -30,10 +30,16 @@ class AppKeys {
   static const encryptionEnabled = 'encryption_enabled'; // bool
   static const encryptionKeyFingerprint = 'encryption_key_fp'; // String
 
+  // App lock (non-secret metadata)
+  static const appLockEnabled = 'app_lock_enabled'; // bool
+  static const appLockBiometricEnabled = 'app_lock_biometric'; // bool
+  static const appLockAutoLockMinutes = 'app_lock_auto_minutes'; // int
+
   // SecureStore keys (encrypted secrets)
   static const driveClientSecret = 'drive_client_secret';
   static const driveRefreshToken = 'drive_refresh_token';
   static const encryptionMasterKey = 'encryption_master_key'; // base64 256-bit
+  static const appLockPinHash = 'app_lock_pin_hash'; // 'salt:hex-sha256'
 }
 
 class AppConfig {
@@ -74,6 +80,14 @@ class AppConfig {
   /// Selectable auto-sync intervals (minutes) and trash retention windows.
   static const autoSyncOptions = [5, 15, 30, 60];
   static const trashRetentionOptions = [7, 30, 0]; // 0 = never auto-empty
+
+  /// App-lock auto-lock intervals (minutes): 1/2/5/10/30 min, 1/2/4/8/12/24 h.
+  static const autoLockOptions = [1, 2, 5, 10, 30, 60, 120, 240, 480, 720, 1440];
+  static const defaultAutoLockMinutes = 5;
+
+  /// Sentinel auto-lock value meaning "until app restart": the app never
+  /// auto-locks by timer while running; it only re-locks on a cold start.
+  static const appLockRestartSentinel = 0;
 
   /// Drive file name holding the encryption canary. Its presence signals
   /// "encryption is ON for this account"; it stores a key fingerprint plus a

@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/theme.dart';
+import 'data/auth/app_lock_service.dart';
 import 'desktop/tray_service.dart';
+import 'features/app_lock/app_lock_screen.dart';
 import 'features/encryption/unlock_screen.dart';
 import 'providers/providers.dart';
 import 'router.dart';
@@ -21,6 +23,9 @@ class _PaperNotesAppState extends ConsumerState<PaperNotesApp>
     with WidgetsBindingObserver {
   Timer? _syncTimer;
   int _timerMinutes = 0;
+  // When the app was last backgrounded/minimized — used to decide, on resume,
+  // whether enough time has elapsed to auto-lock.
+  DateTime? _backgroundedAt;
 
   @override
   void initState() {
@@ -43,7 +48,38 @@ class _PaperNotesAppState extends ConsumerState<PaperNotesApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _maybeSync();
+    switch (state) {
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+        // Record the moment the app left the foreground (only the first such
+        // transition matters — `??=` so inactive→paused keeps the earliest
+        // time). `inactive` is included so desktop focus-loss / tray-hide,
+        // which don't emit paused/hidden, still start the auto-lock clock.
+        _backgroundedAt ??= DateTime.now();
+      case AppLifecycleState.resumed:
+        _maybeSync();
+        _maybeAutoLock();
+        _backgroundedAt = null;
+      default:
+        break;
+    }
+  }
+
+  /// On resume, lock the app if App Lock is on and it was backgrounded for
+  /// longer than the configured auto-lock interval.
+  void _maybeAutoLock() {
+    final backgroundedAt = _backgroundedAt;
+    if (backgroundedAt == null) return;
+    final settings = ref.read(settingsControllerProvider);
+    final lock = ref.read(appLockControllerProvider);
+    if (!settings.appLockEnabled || lock.locked) return;
+    if (AppLockService.shouldAutoLock(
+      autoLockMinutes: settings.appLockAutoLockMinutes,
+      elapsed: DateTime.now().difference(backgroundedAt),
+    )) {
+      ref.read(appLockControllerProvider.notifier).lock();
+    }
   }
 
   /// One-time launch maintenance: optional sync-on-launch + trash auto-empty.
@@ -91,6 +127,11 @@ class _PaperNotesAppState extends ConsumerState<PaperNotesApp>
     final needsUnlock = ref.watch(
       encryptionControllerProvider.select((s) => s.needsUnlock),
     );
+    // App-lock (privacy) gate — the outer of the two gates: authenticate to open
+    // the app, then it may still need the encryption master key underneath.
+    final appLocked = ref.watch(
+      appLockControllerProvider.select((s) => s.locked),
+    );
     // Keep the reminder reconciler alive so it watches the notes stream and
     // schedules/cancels OS reminders as notes change.
     ref.watch(reminderReconcilerProvider);
@@ -115,9 +156,11 @@ class _PaperNotesAppState extends ConsumerState<PaperNotesApp>
         final mq = MediaQuery.of(context);
         return MediaQuery(
           data: mq.copyWith(textScaler: TextScaler.linear(fontScale)),
-          child: needsUnlock
-              ? const UnlockScreen()
-              : (child ?? const SizedBox.shrink()),
+          child: appLocked
+              ? const AppLockScreen()
+              : needsUnlock
+                  ? const UnlockScreen()
+                  : (child ?? const SizedBox.shrink()),
         );
       },
     );
