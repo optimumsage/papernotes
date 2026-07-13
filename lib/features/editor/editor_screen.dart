@@ -71,12 +71,12 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
   /// attachments) — those aren't visible in the title/body comparison.
   bool _metaDirty = false;
 
-  /// True while the body holds a non-collapsed (range) selection. On touch
-  /// platforms the outer scroll's physics are locked while this is true so a
-  /// selection handle can be dragged vertically without the scroll view
-  /// stealing the gesture — without this, Android can't extend/adjust a
-  /// selection because the vertical drag is claimed by the page scroll.
-  bool _hasRangeSelection = false;
+  /// Scrolls the note body. The [FleatherEditor] owns its own scroll
+  /// (`scrollable: true`) so long-press-drag to extend a selection — and the
+  /// auto-scroll when the drag reaches the edge — work natively on Android
+  /// (they don't fight an outer scroll view). The ruled painter reads this
+  /// controller so the lines scroll with, and stay aligned to, the text.
+  final _bodyScroll = ScrollController();
 
   @override
   void initState() {
@@ -115,18 +115,8 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     // moving the caret never marks the note dirty. Serialization is deferred
     // to the debounced flush — nothing walks the document per keystroke.
     _docChanges = controller.document.changes.listen((_) => _scheduleSave());
-    // Selection changes (unlike document changes) come through the controller
-    // itself; used to lock the outer scroll while a range selection is active.
-    controller.addListener(_onSelectionChanged);
     _body = controller;
     setState(() => _loaded = true);
-  }
-
-  void _onSelectionChanged() {
-    final has = !_body!.selection.isCollapsed;
-    if (has != _hasRangeSelection && mounted) {
-      setState(() => _hasRangeSelection = has);
-    }
   }
 
   @override
@@ -136,7 +126,7 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     _bodyFocus.removeListener(_onBodyFocusChange);
     _bodyFocus.dispose();
     _titleController.dispose();
-    _body?.removeListener(_onSelectionChanged);
+    _bodyScroll.dispose();
     _body?.dispose();
     super.dispose();
   }
@@ -364,14 +354,6 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     final ruled =
         ref.watch(settingsControllerProvider.select((s) => s.ruledLines));
 
-    // Touch platforms only: freeze the page scroll while a range selection is
-    // active so selection handles can be dragged (see [_hasRangeSelection]).
-    // Never lock on desktop — NeverScrollableScrollPhysics also kills the
-    // mouse wheel.
-    final lockScroll = _hasRangeSelection &&
-        (theme.platform == TargetPlatform.android ||
-            theme.platform == TargetPlatform.iOS);
-
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
@@ -494,69 +476,52 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
             ),
             body: Column(
               children: [
-                Expanded(
-                  // LayoutBuilder wraps the scroll (not a child of it) so it can
-                  // read the viewport height; a builder inside a scroll sees an
-                  // unbounded main axis.
-                  child: LayoutBuilder(
-                    builder: (context, viewport) {
-                      const pad = EdgeInsets.fromLTRB(20, 8, 20, 40);
-                      // Make the content fill at least the viewport so the ruled
-                      // "paper" lines cover the whole page even for a short note.
-                      // The note body (in Expanded below) absorbs the slack;
-                      // longer notes grow past this via IntrinsicHeight and the
-                      // scroll view scrolls the whole column (lines scroll with
-                      // the text — no drift).
-                      final minBody = viewport.maxHeight - pad.vertical;
-                      return SingleChildScrollView(
-                        physics: lockScroll
-                            ? const NeverScrollableScrollPhysics()
-                            : null,
-                        padding: pad,
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(minHeight: minBody),
-                          // IntrinsicHeight lets the body Expanded resolve to the
-                          // real content height when it exceeds minBody. Valid
-                          // here because Fleather's editable box implements
-                          // intrinsic height; the double-layout cost is
-                          // negligible for note-sized documents.
-                          child: IntrinsicHeight(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                if (_showTitle) _titleField(theme, onBg),
-                                if (_note.isChecklist)
-                                  ChecklistBody(
-                                    items: _note.items,
-                                    onBg: onBg,
-                                    onChanged: _updateItems,
-                                    newItem: _newItem,
-                                  )
-                                else
-                                  // Only the body absorbs the extra height so the
-                                  // ruled grid fills down to the page bottom.
-                                  Expanded(
-                                      child: _bodyField(theme, onBg, ruled)),
-                                if (_note.hasAttachments) ...[
-                                  const SizedBox(height: 24),
-                                  AttachmentSection(
-                                    noteId: _note.id,
-                                    attachments: _note.attachments,
-                                    store: ref.read(attachmentStoreProvider),
-                                    onBg: onBg,
-                                    onRemove: _removeAttachment,
-                                  ),
-                                ],
-                                const SizedBox(height: 24),
-                                _metadata(theme, onBg),
-                              ],
-                            ),
-                          ),
-                        ),
-                      );
-                    },
+                // Title is a fixed header (it doesn't scroll with the body) so
+                // the body editor below can own its own scroll.
+                if (_showTitle)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                    child: _titleField(theme, onBg),
                   ),
+                Expanded(
+                  child: _note.isChecklist
+                      // Checklist rows are individual TextFields; a normal
+                      // scroll view with the footer inline is fine here.
+                      ? SingleChildScrollView(
+                          padding: EdgeInsets.fromLTRB(20, 8, 20,
+                              24 + MediaQuery.viewPaddingOf(context).bottom),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              ChecklistBody(
+                                items: _note.items,
+                                onBg: onBg,
+                                onChanged: _updateItems,
+                                newItem: _newItem,
+                              ),
+                              if (_note.hasAttachments) ...[
+                                const SizedBox(height: 24),
+                                AttachmentSection(
+                                  noteId: _note.id,
+                                  attachments: _note.attachments,
+                                  store: ref.read(attachmentStoreProvider),
+                                  onBg: onBg,
+                                  onRemove: _removeAttachment,
+                                ),
+                              ],
+                              const SizedBox(height: 24),
+                              _metadata(theme, onBg),
+                            ],
+                          ),
+                        )
+                      // The Fleather editor owns its scroll (scrollable: true)
+                      // so Android selection drag-to-extend works natively, and
+                      // the ruled lines fill + scroll with the viewport.
+                      : _noteBody(theme, onBg, ruled),
                 ),
+                // Notes: pin attachments + the created/edited line as a footer so
+                // they stay visible (the editor above scrolls independently).
+                if (!_note.isChecklist) _noteFooter(theme, onBg),
                 // Formatting toolbar — notes only, shown while the body is focused.
                 if (!_note.isChecklist && _bodyFocus.hasFocus)
                   _formattingBar(onBg, bg),
@@ -601,18 +566,51 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     );
   }
 
-  Widget _bodyField(ThemeData theme, Color onBg, bool ruled) {
+  /// Pinned footer for a note: attachments + the created/edited line. Kept out
+  /// of the editor's scroll so it never scrolls off / gets clipped (the bug
+  /// where the metadata was cut off at the bottom in view mode).
+  Widget _noteFooter(ThemeData theme, Color onBg) {
+    // Clear the Android system nav bar when the keyboard/toolbar isn't up.
+    final bottomInset =
+        _bodyFocus.hasFocus ? 0.0 : MediaQuery.viewPaddingOf(context).bottom;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(20, 8, 20, 8 + bottomInset),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (_note.hasAttachments) ...[
+            AttachmentSection(
+              noteId: _note.id,
+              attachments: _note.attachments,
+              store: ref.read(attachmentStoreProvider),
+              onBg: onBg,
+              onRemove: _removeAttachment,
+            ),
+            const SizedBox(height: 12),
+          ],
+          _metadata(theme, onBg),
+        ],
+      ),
+    );
+  }
+
+  Widget _noteBody(ThemeData theme, Color onBg, bool ruled) {
     final baseStyle = theme.textTheme.bodyLarge!
         .copyWith(color: onBg, height: _bodyLineHeightFactor);
+    const padding = EdgeInsets.fromLTRB(20, 8, 20, 24);
 
     // DefaultTextStyle drives FleatherEditor's base paragraph style (it derives
     // its theme from the ambient text style), so this sets the body font/colour.
+    // scrollable: true → the editor owns its scroll, which is what makes
+    // long-press-drag selection (and edge auto-scroll) work on Android.
     final fleatherEditor = FleatherEditor(
       controller: _body!,
       focusNode: _bodyFocus,
-      scrollable: false,
+      scrollController: _bodyScroll,
+      scrollable: true,
       autofocus: widget.isNew,
-      padding: EdgeInsets.zero,
+      padding: padding,
       spellCheckConfiguration: _spellCheck,
     );
 
@@ -642,10 +640,11 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
 
     final editor = DefaultTextStyle(style: baseStyle, child: body);
 
-    // "Note" placeholder, shown only while the document is empty.
+    // "Note" placeholder, shown only while the document is empty. Aligned to
+    // where the editor's text starts (its content padding).
     final hint = Positioned(
-      left: 0,
-      top: 0,
+      left: padding.left,
+      top: padding.top,
       child: ListenableBuilder(
         listenable: _body!,
         builder: (context, _) {
@@ -665,20 +664,25 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     final stacked = Stack(children: [editor, hint]);
     if (!ruled) return stacked;
 
-    // Ruled "paper" lines behind the text. Spacing must equal the editor's
-    // *actual* rendered line height, which is not simply font size × height —
-    // the font's metrics and rounding make it differ (e.g. 22.0, not 16×1.4 =
-    // 22.4). Measuring it the way Fleather lays out a line keeps the rules on
-    // the exact grid the text uses, so they never drift across many lines.
-    // The non-positioned editor drives the Stack's height, so lines fill it.
+    // Ruled "paper" lines behind the text, filling the whole editor viewport.
+    // Spacing equals the editor's *actual* rendered line height (measured the
+    // way Fleather lays out a line, not fontSize×height, so rules don't drift),
+    // and the grid is offset by the editor's scroll position ([_bodyScroll]) so
+    // the lines scroll with — and stay aligned to — the text. Inset to match
+    // the editor's horizontal text padding.
     final lineHeight = _measuredLineHeight(context, baseStyle);
     return Stack(
       children: [
         Positioned.fill(
-          child: CustomPaint(
-            painter: RuledLinesPainter(
-              lineHeight: lineHeight,
-              color: onBg.withValues(alpha: 0.12),
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: padding.left),
+            child: CustomPaint(
+              painter: RuledLinesPainter(
+                lineHeight: lineHeight,
+                color: onBg.withValues(alpha: 0.12),
+                scroll: _bodyScroll,
+                topPadding: padding.top,
+              ),
             ),
           ),
         ),

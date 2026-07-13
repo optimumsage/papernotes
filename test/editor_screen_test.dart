@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:drift/native.dart';
 import 'package:fleather/fleather.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -148,40 +147,56 @@ void main() {
     expect(box.size.height, greaterThan(300));
   });
 
-  testWidgets('range selection locks the outer scroll on touch, not desktop',
+  testWidgets('the note body editor owns its scroll (scrollable) for selection',
       (tester) async {
+    // Selection drag-to-extend on Android only works when the FleatherEditor
+    // manages its own scroll; assert we build it in that mode with a controller.
     const delta = '[{"insert":"select me please\\n"}]';
-    Future<ScrollPhysics?> physicsFor(TargetPlatform platform) async {
-      debugDefaultTargetPlatformOverride = platform;
-      try {
-        await tester.pumpWidget(_harness(
-          db,
-          const EditorScreen(noteId: 'n5', isNew: false, type: NoteType.note),
-        ));
-        await tester.pumpAndSettle();
-
-        // Install a non-collapsed selection via the public controller.
-        final editor = tester.widget<FleatherEditor>(find.byType(FleatherEditor));
-        editor.controller
-            .updateSelection(const TextSelection(baseOffset: 0, extentOffset: 6));
-        await tester.pump();
-
-        return tester
-            .widget<SingleChildScrollView>(find.byType(SingleChildScrollView))
-            .physics;
-      } finally {
-        debugDefaultTargetPlatformOverride = null;
-      }
-    }
-
     await db.upsertNote(
       Note(id: 'n5', type: NoteType.note, body: delta, createdAt: 1, updatedAt: 1),
       dirty: false,
     );
+    await tester.pumpWidget(_harness(
+      db,
+      const EditorScreen(noteId: 'n5', isNew: false, type: NoteType.note),
+    ));
+    await tester.pumpAndSettle();
 
-    expect(await physicsFor(TargetPlatform.android),
-        isA<NeverScrollableScrollPhysics>());
-    expect(await physicsFor(TargetPlatform.macOS),
-        isNot(isA<NeverScrollableScrollPhysics>()));
+    final editor = tester.widget<FleatherEditor>(find.byType(FleatherEditor));
+    expect(editor.scrollable, isTrue);
+    expect(editor.scrollController, isNotNull);
+
+    // A range selection can be installed and read back (selection is enabled).
+    editor.controller
+        .updateSelection(const TextSelection(baseOffset: 0, extentOffset: 6));
+    await tester.pump();
+    expect(editor.controller.selection.isCollapsed, isFalse);
+  });
+
+  testWidgets('note metadata footer stays outside the scrollable editor',
+      (tester) async {
+    // Regression: the created/edited line used to be pushed to the bottom of the
+    // ruled body and clipped in view mode. It must now sit in the pinned footer,
+    // below the editor — not a descendant of the FleatherEditor.
+    const delta = '[{"insert":"hi\\n"}]';
+    await db.upsertNote(
+      Note(id: 'n6', type: NoteType.note, body: delta, createdAt: 1, updatedAt: 1),
+      dirty: false,
+    );
+    await tester.pumpWidget(_harness(
+      db,
+      const EditorScreen(noteId: 'n6', isNew: false, type: NoteType.note),
+    ));
+    await tester.pumpAndSettle();
+
+    final meta = find.textContaining('Created ');
+    expect(meta, findsOneWidget);
+    expect(
+      find.descendant(of: find.byType(FleatherEditor), matching: meta),
+      findsNothing,
+    );
+    // And it renders within the visible viewport (not clipped off-screen).
+    final size = tester.getSize(find.byType(MaterialApp));
+    expect(tester.getBottomLeft(meta).dy, lessThanOrEqualTo(size.height));
   });
 }
