@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:drift/drift.dart';
@@ -5,6 +6,7 @@ import 'package:drift/native.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../crypto/encryption_service.dart';
 import '../models/attachment.dart';
 import '../models/folder.dart';
 import '../models/note.dart';
@@ -77,8 +79,17 @@ class Folders extends Table {
 
 @DriftDatabase(tables: [Notes, Folders])
 class AppDatabase extends _$AppDatabase {
-  AppDatabase() : super(_open());
-  AppDatabase.forTesting(super.executor);
+  AppDatabase({EncryptionService? crypto})
+      : _crypto = crypto ?? EncryptionService(),
+        super(_open());
+  AppDatabase.forTesting(super.executor, {EncryptionService? crypto})
+      : _crypto = crypto ?? EncryptionService();
+
+  /// Encrypts/decrypts the content columns (title, body, items, attachments,
+  /// folder name) at the row-mapper boundary when encryption is unlocked. A
+  /// fresh (disabled) service is a no-op passthrough, so unencrypted stores and
+  /// tests are unaffected.
+  final EncryptionService _crypto;
 
   @override
   int get schemaVersion => 5;
@@ -160,7 +171,8 @@ class AppDatabase extends _$AppDatabase {
         .getSingleOrNull();
     if (existing == null) return note;
     final byId = {
-      for (final a in NoteAttachment.decodeList(existing.attachments))
+      for (final a
+          in NoteAttachment.decodeList(_crypto.maybeDecrypt(existing.attachments)))
         a.id: a.driveFileId,
     };
     final attachments = [
@@ -174,6 +186,14 @@ class AppDatabase extends _$AppDatabase {
 
   Future<void> hardDelete(String id) {
     return (delete(notes)..where((t) => t.id.equals(id))).go();
+  }
+
+  /// Wipe all local notes and folders. Used by the unlock gate's "disconnect"
+  /// escape when a device gives up on entering the master key — the encrypted
+  /// copies on Drive are untouched and can be re-pulled after reconnecting.
+  Future<void> wipeAllContent() async {
+    await delete(notes).go();
+    await delete(folders).go();
   }
 
   // ---- Sync helpers ----
@@ -244,7 +264,9 @@ class AppDatabase extends _$AppDatabase {
     return (update(notes)..where((t) => t.id.equals(id))).write(
       NotesCompanion(
         attachments: Value(
-          attachments.isEmpty ? null : NoteAttachment.encodeList(attachments),
+          _crypto.maybeEncrypt(
+            attachments.isEmpty ? null : NoteAttachment.encodeList(attachments),
+          ),
         ),
       ),
     );
@@ -279,6 +301,26 @@ class AppDatabase extends _$AppDatabase {
   Future<void> upsertFolder(Folder folder, {required bool dirty}) {
     return into(folders)
         .insertOnConflictUpdate(_toFolderCompanion(folder, dirty: dirty));
+  }
+
+  /// Re-encrypt (or decrypt) every note and folder for the current state of the
+  /// injected encryption service. Each row is first read into a *decrypted*
+  /// model using whatever key is active now, then [applyNewState] flips the
+  /// crypto state (unlock with a new key / lock), and everything is rewritten
+  /// under the new state and marked dirty so the next sync re-uploads it. Sync
+  /// metadata (driveFileId, remoteModifiedTime) is preserved because the
+  /// content-only companions upsert rather than replace. Used to
+  /// enable/adopt/change/disable encryption.
+  Future<void> migrateEncryption(FutureOr<void> Function() applyNewState) async {
+    final notes = (await allRawRows()).map(_toModel).toList();
+    final folders = (await allRawFolderRows()).map(_toFolderModel).toList();
+    await applyNewState();
+    for (final note in notes) {
+      await upsertNote(note, dirty: true);
+    }
+    for (final folder in folders) {
+      await upsertFolder(folder, dirty: true);
+    }
   }
 
   Future<void> hardDeleteFolder(String id) {
@@ -347,7 +389,7 @@ class AppDatabase extends _$AppDatabase {
 
   Folder _toFolderModel(FolderRow row) => Folder(
         id: row.id,
-        name: row.name,
+        name: _crypto.decryptString(row.name),
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         deleted: row.deleted,
@@ -357,7 +399,9 @@ class AppDatabase extends _$AppDatabase {
   FoldersCompanion _toFolderCompanion(Folder folder, {required bool dirty}) {
     return FoldersCompanion(
       id: Value(folder.id),
-      name: Value(folder.name),
+      name: Value(_crypto.isUnlocked
+          ? _crypto.encryptString(folder.name)
+          : folder.name),
       createdAt: Value(folder.createdAt),
       updatedAt: Value(folder.updatedAt),
       deleted: Value(folder.deleted),
@@ -369,9 +413,9 @@ class AppDatabase extends _$AppDatabase {
   Note _toModel(NoteRow row) => Note(
         id: row.id,
         type: row.type == 'checklist' ? NoteType.checklist : NoteType.note,
-        title: row.title,
-        body: row.body,
-        items: Note.itemsFromColumn(row.items),
+        title: _crypto.maybeDecrypt(row.title),
+        body: _crypto.maybeDecrypt(row.body),
+        items: Note.itemsFromColumn(_crypto.maybeDecrypt(row.items)),
         color: row.color,
         pinned: row.pinned,
         folderId: row.folderId,
@@ -389,16 +433,18 @@ class AppDatabase extends _$AppDatabase {
           orElse: () => ReminderType.none,
         ),
         reminderAt: row.reminderAt,
-        attachments: NoteAttachment.decodeList(row.attachments),
+        attachments:
+            NoteAttachment.decodeList(_crypto.maybeDecrypt(row.attachments)),
       );
 
   NotesCompanion _toCompanion(Note note, {required bool dirty}) {
     return NotesCompanion(
       id: Value(note.id),
       type: Value(note.type.name),
-      title: Value(note.title),
-      body: Value(note.body),
-      items: Value(note.isChecklist ? note.itemsToColumn() : null),
+      title: Value(_crypto.maybeEncrypt(note.title)),
+      body: Value(_crypto.maybeEncrypt(note.body)),
+      items: Value(
+          _crypto.maybeEncrypt(note.isChecklist ? note.itemsToColumn() : null)),
       color: Value(note.color),
       pinned: Value(note.pinned),
       folderId: Value(note.folderId),
@@ -410,7 +456,7 @@ class AppDatabase extends _$AppDatabase {
       deletedAt: Value(note.deletedAt),
       reminderType: Value(note.reminderType.name),
       reminderAt: Value(note.reminderAt),
-      attachments: Value(note.attachmentsToColumn()),
+      attachments: Value(_crypto.maybeEncrypt(note.attachmentsToColumn())),
       dirty: Value(dirty),
     );
   }

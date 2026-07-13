@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:drift/native.dart';
 import 'package:fleather/fleather.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -125,5 +126,62 @@ void main() {
       // Each line advances by exactly the painter's spacing (no drift).
       expect(tops[i] - tops[i - 1], closeTo(ruled.lineHeight, 0.01));
     }
+  });
+
+  testWidgets('ruled lines fill the page height on a near-empty note',
+      (tester) async {
+    // Empty note: the ruled background must still cover (roughly) the whole
+    // viewport, not just the single caret line — that was the "lines only on
+    // text" bug.
+    await tester.pumpWidget(_harness(
+      db,
+      const EditorScreen(noteId: 'n4', isNew: true, type: NoteType.note),
+    ));
+    await tester.pumpAndSettle();
+
+    final ruledFinder = find.byWidgetPredicate(
+        (w) => w is CustomPaint && w.painter is RuledLinesPainter);
+    final box = tester.renderObject<RenderBox>(ruledFinder);
+    // One line of text is ~22px; the fill must be a large fraction of the
+    // 600px test viewport (minus app bar / padding), proving it isn't
+    // content-sized any more.
+    expect(box.size.height, greaterThan(300));
+  });
+
+  testWidgets('range selection locks the outer scroll on touch, not desktop',
+      (tester) async {
+    const delta = '[{"insert":"select me please\\n"}]';
+    Future<ScrollPhysics?> physicsFor(TargetPlatform platform) async {
+      debugDefaultTargetPlatformOverride = platform;
+      try {
+        await tester.pumpWidget(_harness(
+          db,
+          const EditorScreen(noteId: 'n5', isNew: false, type: NoteType.note),
+        ));
+        await tester.pumpAndSettle();
+
+        // Install a non-collapsed selection via the public controller.
+        final editor = tester.widget<FleatherEditor>(find.byType(FleatherEditor));
+        editor.controller
+            .updateSelection(const TextSelection(baseOffset: 0, extentOffset: 6));
+        await tester.pump();
+
+        return tester
+            .widget<SingleChildScrollView>(find.byType(SingleChildScrollView))
+            .physics;
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    }
+
+    await db.upsertNote(
+      Note(id: 'n5', type: NoteType.note, body: delta, createdAt: 1, updatedAt: 1),
+      dirty: false,
+    );
+
+    expect(await physicsFor(TargetPlatform.android),
+        isA<NeverScrollableScrollPhysics>());
+    expect(await physicsFor(TargetPlatform.macOS),
+        isNot(isA<NeverScrollableScrollPhysics>()));
   });
 }

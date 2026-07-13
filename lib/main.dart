@@ -9,6 +9,7 @@ import 'package:window_manager/window_manager.dart';
 import 'app.dart';
 import 'core/platform.dart';
 import 'data/attachments/attachment_store.dart';
+import 'data/crypto/encryption_service.dart';
 import 'data/local/database.dart';
 import 'data/reminders/reminder_service.dart';
 import 'data/settings_service.dart';
@@ -46,8 +47,28 @@ Future<void> main() async {
 
   // Bootstrap the singletons the provider graph depends on.
   final prefs = await SharedPreferences.getInstance();
-  final database = AppDatabase();
-  final initialSettings = await SettingsService(prefs).load();
+  final settingsService = SettingsService(prefs);
+  final initialSettings = await settingsService.load();
+
+  // Encryption must be unlocked before the database is used so the at-rest row
+  // mappers can decrypt existing rows. When encryption is enabled but no key is
+  // cached (a device that hasn't been unlocked yet), the service stays locked
+  // and the app routes to the unlock gate.
+  final encryption = EncryptionService();
+  if (initialSettings.encryptionEnabled) {
+    final key = await settingsService.readMasterKey();
+    // Only unlock when the cached key matches the recorded fingerprint —
+    // otherwise the key was rotated on another device and this one must show
+    // the unlock gate rather than silently decrypt with a stale key.
+    if (key != null &&
+        EncryptionService.isValidKey(key) &&
+        EncryptionService.fingerprint(key) ==
+            initialSettings.encryptionKeyFingerprint) {
+      encryption.unlock(key);
+    }
+  }
+
+  final database = AppDatabase(crypto: encryption);
   final attachmentStore = await AttachmentStore.open();
 
   // Desktop: if launch-at-login is on, re-apply it so the autostart entry
@@ -71,6 +92,7 @@ Future<void> main() async {
         databaseProvider.overrideWithValue(database),
         initialSettingsProvider.overrideWithValue(initialSettings),
         attachmentStoreProvider.overrideWithValue(attachmentStore),
+        encryptionServiceProvider.overrideWithValue(encryption),
         reminderServiceProvider.overrideWithValue(reminderService),
       ],
       child: const PaperNotesApp(),

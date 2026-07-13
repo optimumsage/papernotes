@@ -26,9 +26,14 @@ class AppKeys {
   static const leftSwipeAction = 'left_swipe_action'; // SwipeAction.name, Android
   static const rightSwipeAction = 'right_swipe_action'; // SwipeAction.name, Android
 
+  // Encryption (non-secret metadata)
+  static const encryptionEnabled = 'encryption_enabled'; // bool
+  static const encryptionKeyFingerprint = 'encryption_key_fp'; // String
+
   // SecureStore keys (encrypted secrets)
   static const driveClientSecret = 'drive_client_secret';
   static const driveRefreshToken = 'drive_refresh_token';
+  static const encryptionMasterKey = 'encryption_master_key'; // base64 256-bit
 }
 
 class AppConfig {
@@ -69,4 +74,14 @@ class AppConfig {
   /// Selectable auto-sync intervals (minutes) and trash retention windows.
   static const autoSyncOptions = [5, 15, 30, 60];
   static const trashRetentionOptions = [7, 30, 0]; // 0 = never auto-empty
+
+  /// Drive file name holding the encryption canary. Its presence signals
+  /// "encryption is ON for this account"; it stores a key fingerprint plus a
+  /// known constant encrypted with the master key so a device can validate a
+  /// typed-in key. Excluded from the note/folder sync partition by its name.
+  static const encryptionMetaFile = 'encryption-meta.json';
+
+  /// The known plaintext encrypted into the canary's `check` field. Decrypting
+  /// it back to this exact value proves a candidate master key is correct.
+  static const encryptionCanaryText = 'papernote-encryption-canary-v1';
 }

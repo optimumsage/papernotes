@@ -4,10 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/constants.dart';
 import '../core/note_sort.dart';
 import '../core/platform.dart';
 import '../core/swipe_action.dart';
 import '../data/attachments/attachment_store.dart';
+import '../data/crypto/encryption_service.dart';
 import '../data/local/database.dart';
 import '../data/models/folder.dart';
 import '../data/models/note.dart';
@@ -34,6 +36,13 @@ final initialSettingsProvider = Provider<AppSettings>((_) {
 });
 final attachmentStoreProvider = Provider<AttachmentStore>((_) {
   throw UnimplementedError('attachmentStoreProvider must be overridden');
+});
+
+/// The single encryption authority. Overridden in main() with the same
+/// instance injected into [AppDatabase] so the at-rest mappers and the sync
+/// engine share one key. A fresh instance is a disabled/no-op passthrough.
+final encryptionServiceProvider = Provider<EncryptionService>((_) {
+  throw UnimplementedError('encryptionServiceProvider must be overridden');
 });
 
 final settingsServiceProvider = Provider<SettingsService>(
@@ -72,6 +81,7 @@ final syncEngineProvider = Provider<SyncEngine>(
     ref.watch(driveClientProvider),
     ref.watch(settingsServiceProvider),
     ref.watch(attachmentStoreProvider),
+    ref.watch(encryptionServiceProvider),
   ),
 );
 
@@ -301,6 +311,14 @@ class SettingsController extends Notifier<AppSettings> {
     state = state.copyWith(launchAtStartup: value);
   }
 
+  /// Persist the encryption enabled flag + key fingerprint together, then
+  /// reload so a null fingerprint (on disable) is reflected too.
+  Future<void> applyEncryptionState(bool enabled, String? fingerprint) async {
+    await _service.setEncryptionEnabled(enabled);
+    await _service.setEncryptionKeyFingerprint(fingerprint);
+    await reload();
+  }
+
   Future<void> setCredentials(String clientId, String clientSecret) async {
     await _service.setClientId(clientId.trim());
     if (clientSecret.isNotEmpty) {
@@ -380,8 +398,25 @@ class SyncController extends Notifier<SyncStatus> {
   Future<void> syncNow({bool quick = false}) async {
     final settings = ref.read(settingsControllerProvider);
     if (!settings.syncEnabled || !settings.signedIn) return;
+    // Never sync while the unlock gate is armed — a quick push could otherwise
+    // upload plaintext (or mis-enveloped ciphertext) under a locked/stale key.
+    if (ref.read(encryptionControllerProvider).needsUnlock) {
+      state = const SyncStatus(SyncPhase.idle, 'Locked');
+      return;
+    }
     try {
       state = const SyncStatus(SyncPhase.running, 'Syncing…');
+      // On full syncs, detect account-level encryption first; if this device
+      // can't read it, arm the unlock gate and skip pulling ciphertext.
+      if (!quick) {
+        final canSync = await ref
+            .read(encryptionControllerProvider.notifier)
+            .reconcileBeforeSync();
+        if (!canSync) {
+          state = const SyncStatus(SyncPhase.idle, 'Locked');
+          return;
+        }
+      }
       final result = await ref.read(syncEngineProvider).sync(quick: quick);
       ref.read(settingsControllerProvider.notifier).markSyncedNow();
       state = SyncStatus(
@@ -392,6 +427,185 @@ class SyncController extends Notifier<SyncStatus> {
       state = SyncStatus(SyncPhase.error, e.message);
     } catch (e) {
       state = SyncStatus(SyncPhase.error, 'Sync failed: $e');
+    }
+  }
+}
+
+// ---- Encryption controller ----
+
+/// Snapshot of the device's encryption state. [needsUnlock] drives the
+/// full-screen unlock gate: encryption is on for the account but this device
+/// doesn't hold the master key yet.
+class EncryptionStatus {
+  final bool enabled;
+  final bool unlocked;
+  const EncryptionStatus({required this.enabled, required this.unlocked});
+
+  bool get needsUnlock => enabled && !unlocked;
+}
+
+final encryptionControllerProvider =
+    NotifierProvider<EncryptionController, EncryptionStatus>(
+        EncryptionController.new);
+
+class EncryptionController extends Notifier<EncryptionStatus> {
+  EncryptionService get _crypto => ref.read(encryptionServiceProvider);
+  SettingsService get _settingsService => ref.read(settingsServiceProvider);
+  AppDatabase get _db => ref.read(databaseProvider);
+  SyncEngine get _engine => ref.read(syncEngineProvider);
+
+  @override
+  EncryptionStatus build() {
+    final enabled = ref.watch(
+        settingsControllerProvider.select((s) => s.encryptionEnabled));
+    // main() unlocks the crypto service before the app builds when a key is
+    // cached, so isUnlocked is authoritative here.
+    return EncryptionStatus(enabled: enabled, unlocked: _crypto.isUnlocked);
+  }
+
+  void _refresh(bool enabled) =>
+      state = EncryptionStatus(enabled: enabled, unlocked: _crypto.isUnlocked);
+
+  /// Enable encryption on this device with a freshly-generated [key]: cache the
+  /// key, encrypt the local database, upload the canary, and re-sync so every
+  /// note re-uploads encrypted.
+  Future<void> enableWithKey(String key) async {
+    await _settingsService.setMasterKey(key);
+    await _db.migrateEncryption(() => _crypto.unlock(key));
+    await ref
+        .read(settingsControllerProvider.notifier)
+        .applyEncryptionState(true, EncryptionService.fingerprint(key));
+    // Encrypt already-synced attachment binaries in place under the new key.
+    await _engine.reencryptAttachments();
+    // Publish the canary if Drive is reachable; otherwise the next sync
+    // (after sign-in) self-heals it via [reconcileBeforeSync].
+    await _tryPublishCanary();
+    _refresh(true);
+    await ref.read(syncControllerProvider.notifier).syncNow();
+  }
+
+  /// Rotate to a new master key: re-encrypt everything under it, rewrite the
+  /// canary (new fingerprint → other devices re-prompt), and re-sync.
+  Future<void> changeKey(String newKey) async {
+    await _settingsService.setMasterKey(newKey);
+    await _db.migrateEncryption(() => _crypto.unlock(newKey));
+    await ref
+        .read(settingsControllerProvider.notifier)
+        .applyEncryptionState(true, EncryptionService.fingerprint(newKey));
+    await _engine.reencryptAttachments();
+    await _tryPublishCanary();
+    _refresh(true);
+    await ref.read(syncControllerProvider.notifier).syncNow();
+  }
+
+  /// Validate a typed-in master key against the remote canary and, if correct,
+  /// adopt it on this device (cache key, encrypt any local plaintext notes) and
+  /// re-sync. Returns false when the key is wrong.
+  Future<bool> unlockWithKey(String key) async {
+    if (!EncryptionService.isValidKey(key)) return false;
+    final meta = await _engine.readEncryptionMeta();
+    final check = meta?['check'];
+    if (check is! String ||
+        EncryptionService.tryDecryptWith(key, check) !=
+            AppConfig.encryptionCanaryText) {
+      return false;
+    }
+    // If this device already holds a (possibly older) key, load it so the
+    // existing local rows decrypt correctly before we re-encrypt them under the
+    // new key — the gate may have locked the service (key rotated elsewhere).
+    // For a first-time adopt there's no cached key, so local rows are plaintext.
+    final oldKey = await _settingsService.readMasterKey();
+    if (oldKey != null && EncryptionService.isValidKey(oldKey)) {
+      _crypto.unlock(oldKey);
+    }
+    await _settingsService.setMasterKey(key);
+    await _db.migrateEncryption(() => _crypto.unlock(key));
+    await ref
+        .read(settingsControllerProvider.notifier)
+        .applyEncryptionState(true, EncryptionService.fingerprint(key));
+    await _engine.reencryptAttachments();
+    _refresh(true);
+    await ref.read(syncControllerProvider.notifier).syncNow();
+    return true;
+  }
+
+  /// Turn encryption off for the account: decrypt the local database, drop the
+  /// canary + cached key, and re-sync so notes re-upload in the clear.
+  Future<void> disable() async {
+    await _db.migrateEncryption(() => _crypto.lock());
+    // Decrypt already-synced attachment binaries in place (crypto is now
+    // locked, so this re-uploads them as plaintext).
+    await _engine.reencryptAttachments();
+    // Flip local state BEFORE the network delete so a failed/offline delete
+    // can't strand the device on the unlock gate.
+    await _settingsService.setMasterKey(null);
+    await ref
+        .read(settingsControllerProvider.notifier)
+        .applyEncryptionState(false, null);
+    _refresh(false);
+    try {
+      await _engine.deleteEncryptionMeta();
+    } catch (_) {
+      // Best-effort — re-run "Turn off" while online to drop the canary.
+    }
+    await ref.read(syncControllerProvider.notifier).syncNow();
+  }
+
+  /// Called before a full sync: detect account-level encryption via the canary.
+  /// Returns true when it's safe to sync note data; false when this device must
+  /// unlock first (encryption is on remotely but we can't read it), in which
+  /// case the unlock gate is armed.
+  Future<bool> reconcileBeforeSync() async {
+    final Map<String, dynamic>? meta;
+    try {
+      meta = await _engine.readEncryptionMeta();
+    } catch (_) {
+      // Can't reach Drive — let the normal sync path surface the error.
+      return true;
+    }
+    final settings = ref.read(settingsControllerProvider);
+    if (meta == null) {
+      // No canary on Drive yet. If this device is the encrypting source of
+      // truth, publish it now so other devices learn the account is encrypted.
+      if (_crypto.isUnlocked && settings.encryptionEnabled) {
+        await _tryPublishCanary();
+      }
+      return true;
+    }
+    final fp = meta['fp'] as String?;
+    final check = meta['check'];
+    // Proceed only if the *loaded* key actually decrypts the canary — never
+    // trust the persisted fingerprint alone (it can be ahead of a stale cached
+    // key after a rotation elsewhere).
+    if (_crypto.isUnlocked &&
+        check is String &&
+        _crypto.decryptString(check) == AppConfig.encryptionCanaryText) {
+      return true;
+    }
+    // Encrypted remotely and we can't read it (new device, or the key was
+    // rotated elsewhere). Arm the gate and skip syncing ciphertext we can't
+    // decrypt.
+    _crypto.lock();
+    await ref
+        .read(settingsControllerProvider.notifier)
+        .applyEncryptionState(true, fp);
+    _refresh(true);
+    return false;
+  }
+
+  /// Publish (create/overwrite) the Drive canary describing the current key.
+  /// Best-effort: a failure (e.g. not signed in yet) is swallowed and retried
+  /// by the next sync's [reconcileBeforeSync].
+  Future<void> _tryPublishCanary() async {
+    if (!_crypto.isUnlocked) return;
+    try {
+      await _engine.writeEncryptionMeta({
+        'pnenc': 1,
+        'fp': ref.read(settingsControllerProvider).encryptionKeyFingerprint,
+        'check': _crypto.encryptString(AppConfig.encryptionCanaryText),
+      });
+    } catch (_) {
+      // Retried on the next sync.
     }
   }
 }

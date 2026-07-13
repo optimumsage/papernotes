@@ -71,6 +71,13 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
   /// attachments) — those aren't visible in the title/body comparison.
   bool _metaDirty = false;
 
+  /// True while the body holds a non-collapsed (range) selection. On touch
+  /// platforms the outer scroll's physics are locked while this is true so a
+  /// selection handle can be dragged vertically without the scroll view
+  /// stealing the gesture — without this, Android can't extend/adjust a
+  /// selection because the vertical drag is claimed by the page scroll.
+  bool _hasRangeSelection = false;
+
   @override
   void initState() {
     super.initState();
@@ -108,8 +115,18 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     // moving the caret never marks the note dirty. Serialization is deferred
     // to the debounced flush — nothing walks the document per keystroke.
     _docChanges = controller.document.changes.listen((_) => _scheduleSave());
+    // Selection changes (unlike document changes) come through the controller
+    // itself; used to lock the outer scroll while a range selection is active.
+    controller.addListener(_onSelectionChanged);
     _body = controller;
     setState(() => _loaded = true);
+  }
+
+  void _onSelectionChanged() {
+    final has = !_body!.selection.isCollapsed;
+    if (has != _hasRangeSelection && mounted) {
+      setState(() => _hasRangeSelection = has);
+    }
   }
 
   @override
@@ -119,6 +136,7 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     _bodyFocus.removeListener(_onBodyFocusChange);
     _bodyFocus.dispose();
     _titleController.dispose();
+    _body?.removeListener(_onSelectionChanged);
     _body?.dispose();
     super.dispose();
   }
@@ -346,6 +364,14 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     final ruled =
         ref.watch(settingsControllerProvider.select((s) => s.ruledLines));
 
+    // Touch platforms only: freeze the page scroll while a range selection is
+    // active so selection handles can be dragged (see [_hasRangeSelection]).
+    // Never lock on desktop — NeverScrollableScrollPhysics also kills the
+    // mouse wheel.
+    final lockScroll = _hasRangeSelection &&
+        (theme.platform == TargetPlatform.android ||
+            theme.platform == TargetPlatform.iOS);
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
@@ -469,32 +495,66 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
             body: Column(
               children: [
                 Expanded(
-                  child: ListView(
-                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 40),
-                    children: [
-                      if (_showTitle) _titleField(theme, onBg),
-                      if (_note.isChecklist)
-                        ChecklistBody(
-                          items: _note.items,
-                          onBg: onBg,
-                          onChanged: _updateItems,
-                          newItem: _newItem,
-                        )
-                      else
-                        _bodyField(theme, onBg, ruled),
-                      if (_note.hasAttachments) ...[
-                        const SizedBox(height: 24),
-                        AttachmentSection(
-                          noteId: _note.id,
-                          attachments: _note.attachments,
-                          store: ref.read(attachmentStoreProvider),
-                          onBg: onBg,
-                          onRemove: _removeAttachment,
+                  // LayoutBuilder wraps the scroll (not a child of it) so it can
+                  // read the viewport height; a builder inside a scroll sees an
+                  // unbounded main axis.
+                  child: LayoutBuilder(
+                    builder: (context, viewport) {
+                      const pad = EdgeInsets.fromLTRB(20, 8, 20, 40);
+                      // Make the content fill at least the viewport so the ruled
+                      // "paper" lines cover the whole page even for a short note.
+                      // The note body (in Expanded below) absorbs the slack;
+                      // longer notes grow past this via IntrinsicHeight and the
+                      // scroll view scrolls the whole column (lines scroll with
+                      // the text — no drift).
+                      final minBody = viewport.maxHeight - pad.vertical;
+                      return SingleChildScrollView(
+                        physics: lockScroll
+                            ? const NeverScrollableScrollPhysics()
+                            : null,
+                        padding: pad,
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(minHeight: minBody),
+                          // IntrinsicHeight lets the body Expanded resolve to the
+                          // real content height when it exceeds minBody. Valid
+                          // here because Fleather's editable box implements
+                          // intrinsic height; the double-layout cost is
+                          // negligible for note-sized documents.
+                          child: IntrinsicHeight(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                if (_showTitle) _titleField(theme, onBg),
+                                if (_note.isChecklist)
+                                  ChecklistBody(
+                                    items: _note.items,
+                                    onBg: onBg,
+                                    onChanged: _updateItems,
+                                    newItem: _newItem,
+                                  )
+                                else
+                                  // Only the body absorbs the extra height so the
+                                  // ruled grid fills down to the page bottom.
+                                  Expanded(
+                                      child: _bodyField(theme, onBg, ruled)),
+                                if (_note.hasAttachments) ...[
+                                  const SizedBox(height: 24),
+                                  AttachmentSection(
+                                    noteId: _note.id,
+                                    attachments: _note.attachments,
+                                    store: ref.read(attachmentStoreProvider),
+                                    onBg: onBg,
+                                    onRemove: _removeAttachment,
+                                  ),
+                                ],
+                                const SizedBox(height: 24),
+                                _metadata(theme, onBg),
+                              ],
+                            ),
+                          ),
                         ),
-                      ],
-                      const SizedBox(height: 24),
-                      _metadata(theme, onBg),
-                    ],
+                      );
+                    },
                   ),
                 ),
                 // Formatting toolbar — notes only, shown while the body is focused.

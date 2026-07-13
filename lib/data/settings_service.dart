@@ -31,6 +31,10 @@ class AppSettings {
   final SwipeAction leftSwipeAction; // Android: left-swipe note action
   final SwipeAction rightSwipeAction; // Android: right-swipe note action
 
+  // Encryption
+  final bool encryptionEnabled; // notes encrypted at rest + in Drive sync
+  final String? encryptionKeyFingerprint; // detects a changed master key
+
   const AppSettings({
     this.syncEnabled = false,
     this.themeMode = ThemeMode.system,
@@ -52,6 +56,8 @@ class AppSettings {
     this.launchAtStartup = false,
     this.leftSwipeAction = AppConfig.defaultLeftSwipe,
     this.rightSwipeAction = AppConfig.defaultRightSwipe,
+    this.encryptionEnabled = false,
+    this.encryptionKeyFingerprint,
   });
 
   bool get isConfigured =>
@@ -78,6 +84,8 @@ class AppSettings {
     bool? launchAtStartup,
     SwipeAction? leftSwipeAction,
     SwipeAction? rightSwipeAction,
+    bool? encryptionEnabled,
+    String? encryptionKeyFingerprint,
   }) {
     return AppSettings(
       syncEnabled: syncEnabled ?? this.syncEnabled,
@@ -100,6 +108,9 @@ class AppSettings {
       launchAtStartup: launchAtStartup ?? this.launchAtStartup,
       leftSwipeAction: leftSwipeAction ?? this.leftSwipeAction,
       rightSwipeAction: rightSwipeAction ?? this.rightSwipeAction,
+      encryptionEnabled: encryptionEnabled ?? this.encryptionEnabled,
+      encryptionKeyFingerprint:
+          encryptionKeyFingerprint ?? this.encryptionKeyFingerprint,
     );
   }
 }
@@ -147,6 +158,9 @@ class SettingsService {
       rightSwipeAction: _prefs.getString(AppKeys.rightSwipeAction) == null
           ? AppConfig.defaultRightSwipe
           : swipeActionFromName(_prefs.getString(AppKeys.rightSwipeAction)),
+      encryptionEnabled: _prefs.getBool(AppKeys.encryptionEnabled) ?? false,
+      encryptionKeyFingerprint:
+          _prefs.getString(AppKeys.encryptionKeyFingerprint),
     );
   }
 
@@ -224,6 +238,30 @@ class SettingsService {
       await _secure.delete(AppKeys.driveRefreshToken);
     } else {
       await _secure.write(AppKeys.driveRefreshToken, value);
+    }
+  }
+
+  // ---- Encryption ----
+
+  Future<void> setEncryptionEnabled(bool value) =>
+      _prefs.setBool(AppKeys.encryptionEnabled, value);
+
+  Future<void> setEncryptionKeyFingerprint(String? value) async {
+    if (value == null) {
+      await _prefs.remove(AppKeys.encryptionKeyFingerprint);
+    } else {
+      await _prefs.setString(AppKeys.encryptionKeyFingerprint, value);
+    }
+  }
+
+  /// The cached master key on this device (base64), or null if never unlocked.
+  Future<String?> readMasterKey() => _secure.read(AppKeys.encryptionMasterKey);
+
+  Future<void> setMasterKey(String? value) async {
+    if (value == null) {
+      await _secure.delete(AppKeys.encryptionMasterKey);
+    } else {
+      await _secure.write(AppKeys.encryptionMasterKey, value);
     }
   }
 

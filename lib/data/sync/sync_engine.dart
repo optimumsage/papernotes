@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import '../../core/constants.dart';
 import '../attachments/attachment_store.dart';
+import '../crypto/encryption_service.dart';
 import '../local/database.dart';
 import '../models/attachment.dart';
 import '../models/folder.dart';
@@ -15,6 +18,10 @@ const _folderPrefix = 'folder-';
 /// These are handled by `driveFileId` from within note payloads, so they are
 /// excluded from the note/folder partition on listing.
 const _attachPrefix = 'attach-';
+
+/// Drive file-name prefix for encryption metadata (`encryption-meta.json`).
+/// Excluded from the note/folder/attachment partition on listing.
+const _encryptionPrefix = 'encryption-';
 
 /// Skip garbage-collecting attachment binaries newer than this — another
 /// device may have just uploaded one whose owning note this device hasn't
@@ -36,12 +43,13 @@ class SyncResult {
 /// The engine is stateless between runs except for the per-row sync metadata
 /// (`driveFileId`, `remoteModifiedTime`, `dirty`) persisted in the database.
 class SyncEngine {
-  SyncEngine(this._db, this._client, this._settings, this._store);
+  SyncEngine(this._db, this._client, this._settings, this._store, this._crypto);
 
   final AppDatabase _db;
   final DriveApi _client;
   final SettingsService _settings;
   final AttachmentStore _store;
+  final EncryptionService _crypto;
 
   bool _running = false;
 
@@ -73,7 +81,8 @@ class SyncEngine {
       final remoteNotes = remote
           .where((f) =>
               !f.noteId.startsWith(_folderPrefix) &&
-              !f.noteId.startsWith(_attachPrefix))
+              !f.noteId.startsWith(_attachPrefix) &&
+              !f.noteId.startsWith(_encryptionPrefix))
           .toList();
       final remoteFolders =
           remote.where((f) => f.noteId.startsWith(_folderPrefix)).toList();
@@ -149,7 +158,8 @@ class SyncEngine {
         continue;
       }
 
-      final remoteNote = Note.fromJson(await _client.download(file.id));
+      final remoteNote =
+          Note.fromJson(_crypto.unwrapPayload(await _client.download(file.id)));
 
       if (local == null || remoteNote.updatedAt > local.updatedAt) {
         await _db.applyRemote(
@@ -184,9 +194,10 @@ class SyncEngine {
       final note = await _uploadAttachments(_db.noteFromRow(raw));
       final existingId = raw.driveFileId ?? remoteById[note.id]?.id;
 
+      final payload = _crypto.wrapPayload(note.encode());
       final result = existingId == null
-          ? await _client.create(note.id, note.encode())
-          : await _client.update(existingId, note.id, note.encode());
+          ? await _client.create(note.id, payload)
+          : await _client.update(existingId, note.id, payload);
 
       await _db.setSyncMeta(
         note.id,
@@ -214,8 +225,11 @@ class SyncEngine {
         continue;
       }
       try {
+        final bytes = await file.readAsBytes();
+        final payload =
+            _crypto.isUnlocked ? _crypto.encryptBytes(bytes) : bytes;
         final remote =
-            await _client.createBinary('$_attachPrefix${att.id}', await file.readAsBytes());
+            await _client.createBinary('$_attachPrefix${att.id}', payload);
         updated.add(att.copyWith(driveFileId: remote.id));
         changed = true;
       } catch (_) {
@@ -236,7 +250,8 @@ class SyncEngine {
       if (fid == null) continue;
       if (await _store.exists(note.id, att)) continue;
       try {
-        await _store.writeBytes(note.id, att, await _client.downloadBytes(fid));
+        final bytes = await _client.downloadBytes(fid);
+        await _store.writeBytes(note.id, att, _crypto.maybeDecryptBytes(bytes));
       } catch (_) {
         // Retried next full sync.
       }
@@ -252,7 +267,8 @@ class SyncEngine {
     // a delete pending sync still protects its files until it's purged).
     final referenced = <String>{};
     for (final row in await _db.allRawRows()) {
-      for (final att in NoteAttachment.decodeList(row.attachments)) {
+      for (final att
+          in NoteAttachment.decodeList(_crypto.maybeDecrypt(row.attachments))) {
         referenced.add(att.id);
       }
     }
@@ -322,7 +338,8 @@ class SyncEngine {
         continue;
       }
 
-      final remoteFolder = Folder.fromJson(await _client.download(file.id));
+      final remoteFolder = Folder.fromJson(
+          _crypto.unwrapPayload(await _client.download(file.id)));
 
       if (local == null || remoteFolder.updatedAt > local.updatedAt) {
         await _db.applyRemoteFolder(
@@ -351,9 +368,10 @@ class SyncEngine {
       final existingId = raw.driveFileId ?? remoteById[folder.id]?.id;
       final fileId = _folderFileName(folder.id);
 
+      final payload = _crypto.wrapPayload(folder.encode());
       final result = existingId == null
-          ? await _client.create(fileId, folder.encode())
-          : await _client.update(existingId, fileId, folder.encode());
+          ? await _client.create(fileId, payload)
+          : await _client.update(existingId, fileId, payload);
 
       await _db.setFolderSyncMeta(
         folder.id,
@@ -364,6 +382,70 @@ class SyncEngine {
       pushed++;
     }
     return pushed;
+  }
+
+  /// Re-upload every already-synced attachment binary in place under the
+  /// current crypto state — encrypting them on enable/change, or decrypting
+  /// them on disable. The on-disk copy is always plaintext, so re-uploading
+  /// from disk with the active key produces the right ciphertext. Keeps each
+  /// binary's Drive file id (no duplicate/orphan). Best-effort per file; a
+  /// device that lacks a binary locally just skips it (another device owns it).
+  Future<void> reencryptAttachments() async {
+    for (final raw in await _db.allRawRows()) {
+      final note = _db.noteFromRow(raw);
+      for (final att in note.attachments) {
+        final fid = att.driveFileId;
+        if (fid == null) continue;
+        final file = _store.fileFor(note.id, att);
+        if (!await file.exists()) continue;
+        try {
+          final bytes = await file.readAsBytes();
+          final payload =
+              _crypto.isUnlocked ? _crypto.encryptBytes(bytes) : bytes;
+          await _client.updateBinary(fid, payload);
+        } catch (_) {
+          // Best-effort — retried on a later re-key if it fails.
+        }
+      }
+    }
+  }
+
+  // ---- Encryption metadata (the canary) ----
+
+  /// The bare noteId of the canary file (`encryption-meta.json` minus `.json`).
+  static const _encryptionMetaNoteId = 'encryption-meta';
+
+  /// Fetch the account's encryption canary, or null when encryption isn't
+  /// enabled remotely. Shape: `{"pnenc":1, "fp":fingerprint, "check":known
+  /// text encrypted with the master key}`.
+  Future<Map<String, dynamic>?> readEncryptionMeta() async {
+    final file = await _encryptionMetaFile();
+    if (file == null) return null;
+    return _client.download(file.id);
+  }
+
+  /// Create or overwrite the canary describing the current master key.
+  Future<void> writeEncryptionMeta(Map<String, dynamic> meta) async {
+    final content = jsonEncode(meta);
+    final existing = await _encryptionMetaFile();
+    if (existing == null) {
+      await _client.create(_encryptionMetaNoteId, content);
+    } else {
+      await _client.update(existing.id, _encryptionMetaNoteId, content);
+    }
+  }
+
+  /// Remove the canary (used when disabling encryption for the account).
+  Future<void> deleteEncryptionMeta() async {
+    final file = await _encryptionMetaFile();
+    if (file != null) await _client.deleteFile(file.id);
+  }
+
+  Future<RemoteFile?> _encryptionMetaFile() async {
+    for (final f in await _client.list()) {
+      if (f.noteId == _encryptionMetaNoteId) return f;
+    }
+    return null;
   }
 
   Future<int> _purgeFolders() async {

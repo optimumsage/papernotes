@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/theme.dart';
 import 'desktop/tray_service.dart';
+import 'features/encryption/unlock_screen.dart';
 import 'providers/providers.dart';
 import 'router.dart';
 
@@ -85,6 +86,11 @@ class _PaperNotesAppState extends ConsumerState<PaperNotesApp>
     final fontScale = ref.watch(
       settingsControllerProvider.select((s) => s.fontScale),
     );
+    // Gate the whole app behind the unlock screen when encryption is on for the
+    // account but this device hasn't entered the master key yet.
+    final needsUnlock = ref.watch(
+      encryptionControllerProvider.select((s) => s.needsUnlock),
+    );
     // Keep the reminder reconciler alive so it watches the notes stream and
     // schedules/cancels OS reminders as notes change.
     ref.watch(reminderReconcilerProvider);
@@ -109,7 +115,9 @@ class _PaperNotesAppState extends ConsumerState<PaperNotesApp>
         final mq = MediaQuery.of(context);
         return MediaQuery(
           data: mq.copyWith(textScaler: TextScaler.linear(fontScale)),
-          child: child ?? const SizedBox.shrink(),
+          child: needsUnlock
+              ? const UnlockScreen()
+              : (child ?? const SizedBox.shrink()),
         );
       },
     );

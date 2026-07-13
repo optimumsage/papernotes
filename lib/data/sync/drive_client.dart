@@ -47,6 +47,7 @@ abstract interface class DriveApi {
   Future<void> deleteFile(String fileId);
   Future<String?> modifiedTime(String fileId);
   Future<RemoteFile> createBinary(String name, List<int> bytes);
+  Future<void> updateBinary(String fileId, List<int> bytes);
   Future<List<int>> downloadBytes(String fileId);
 }
 
@@ -142,6 +143,15 @@ class DriveClient implements DriveApi {
     );
     return RemoteFile(
         created.id!, created.name!, created.modifiedTime?.toIso8601String());
+  }
+
+  /// Overwrites an existing binary's content in place (keeps its file id), used
+  /// to re-encrypt an attachment when the master key is enabled/changed/removed.
+  @override
+  Future<void> updateBinary(String fileId, List<int> bytes) async {
+    final media = drive.Media(Stream.value(bytes), bytes.length,
+        contentType: 'application/octet-stream');
+    await _api.files.update(drive.File(), fileId, uploadMedia: media);
   }
 
   /// Downloads a file's raw bytes (an attachment binary).

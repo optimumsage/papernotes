@@ -6,9 +6,11 @@ import '../../core/constants.dart';
 import '../../core/note_colors.dart';
 import '../../core/platform.dart';
 import '../../core/swipe_action.dart';
+import '../../data/crypto/encryption_service.dart';
 import '../../data/update_service.dart';
 import '../../providers/providers.dart';
 import '../editor/color_picker.dart';
+import '../encryption/master_key_dialog.dart';
 
 /// Named font-size steps mapped to text scale factors.
 const _fontSteps = <String, double>{
@@ -31,6 +33,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _obscureSecret = true;
   String? _version;
   bool _checkingUpdate = false;
+  bool _encrypting = false;
 
   @override
   void initState() {
@@ -182,6 +185,70 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
     await ref.read(noteRepositoryProvider).emptyTrash();
     _snack('Trash emptied');
+  }
+
+  Future<void> _enableEncryption() async {
+    final key = EncryptionService.generateMasterKey();
+    final confirmed =
+        await showMasterKeyDialog(context, masterKey: key, isChange: false);
+    if (confirmed != true || !mounted) return;
+    setState(() => _encrypting = true);
+    try {
+      await ref.read(encryptionControllerProvider.notifier).enableWithKey(key);
+      if (mounted) _snack('Encryption enabled');
+    } catch (e) {
+      if (mounted) _snack('Could not enable encryption: $e');
+    } finally {
+      if (mounted) setState(() => _encrypting = false);
+    }
+  }
+
+  Future<void> _changeMasterKey() async {
+    final key = EncryptionService.generateMasterKey();
+    final confirmed =
+        await showMasterKeyDialog(context, masterKey: key, isChange: true);
+    if (confirmed != true || !mounted) return;
+    setState(() => _encrypting = true);
+    try {
+      await ref.read(encryptionControllerProvider.notifier).changeKey(key);
+      if (mounted) _snack('Master key changed');
+    } catch (e) {
+      if (mounted) _snack('Could not change key: $e');
+    } finally {
+      if (mounted) setState(() => _encrypting = false);
+    }
+  }
+
+  Future<void> _disableEncryption() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Turn off encryption?'),
+        content: const Text(
+            'Your notes will be decrypted and stored — and synced to Drive — '
+            'in the clear again.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Turn off'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _encrypting = true);
+    try {
+      await ref.read(encryptionControllerProvider.notifier).disable();
+      if (mounted) _snack('Encryption turned off');
+    } catch (e) {
+      if (mounted) _snack('Could not turn off encryption: $e');
+    } finally {
+      if (mounted) setState(() => _encrypting = false);
+    }
   }
 
   @override
@@ -475,6 +542,35 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       style: TextStyle(color: theme.colorScheme.error)),
                   onTap: _emptyTrash,
                 ),
+              ],
+            ),
+          ),
+
+          // ---- Encryption ----
+          const SizedBox(height: 16),
+          _sectionLabel(context, 'Encryption'),
+          Card(
+            child: Column(
+              children: [
+                SwitchListTile(
+                  title: const Text('Encrypt notes'),
+                  subtitle: Text(settings.encryptionEnabled
+                      ? 'Notes are end-to-end encrypted with your master key'
+                      : 'Protect notes on this device and in Drive sync with a '
+                          'master key'),
+                  value: settings.encryptionEnabled,
+                  onChanged: _encrypting
+                      ? null
+                      : (v) => v ? _enableEncryption() : _disableEncryption(),
+                ),
+                if (settings.encryptionEnabled)
+                  ListTile(
+                    leading: const Icon(Icons.key_outlined),
+                    title: const Text('Change master key'),
+                    subtitle: const Text(
+                        'Generate a new key; other devices will re-ask for it'),
+                    onTap: _encrypting ? null : _changeMasterKey,
+                  ),
               ],
             ),
           ),
