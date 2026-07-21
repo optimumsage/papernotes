@@ -93,7 +93,9 @@ class NoteRepository {
 
   /// Permanently delete: flips the tombstone so the removal propagates to other
   /// devices on the next sync; the row + remote file are purged by the sync
-  /// engine after the retention window (or immediately when sync is off).
+  /// engine after the retention window. With sync off nothing purges the row,
+  /// but it is invisible to every query (they all filter `deleted`), so it costs
+  /// only the storage.
   Future<void> deletePermanently(String id) async {
     final note = await _db.getNote(id);
     if (note == null) return;

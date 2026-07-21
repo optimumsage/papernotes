@@ -8,71 +8,10 @@ import 'package:papernote/data/crypto/encryption_service.dart';
 import 'package:papernote/data/local/database.dart';
 import 'package:papernote/data/models/note.dart';
 import 'package:papernote/data/settings_service.dart';
-import 'package:papernote/data/sync/drive_client.dart';
 import 'package:papernote/data/sync/sync_engine.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// In-memory stand-in for Drive's appDataFolder.
-class _FakeDrive implements DriveApi {
-  final Map<String, _FakeFile> files = {};
-  int _seq = 0;
-  String _newId() => 'file-${_seq++}';
-  String _stamp() => DateTime.now().toUtc().toIso8601String();
-
-  @override
-  Future<List<RemoteFile>> list() async => files.entries
-      .map((e) => RemoteFile(e.key, e.value.name, e.value.modified))
-      .toList();
-
-  @override
-  Future<Map<String, dynamic>> download(String fileId) async =>
-      (jsonDecode(utf8.decode(files[fileId]!.bytes)) as Map)
-          .cast<String, dynamic>();
-
-  @override
-  Future<RemoteFile> create(String noteId, String content) async {
-    final id = _newId();
-    files[id] = _FakeFile('$noteId.json', utf8.encode(content), _stamp());
-    return RemoteFile(id, '$noteId.json', files[id]!.modified);
-  }
-
-  @override
-  Future<RemoteFile> update(String fileId, String noteId, String content) async {
-    files[fileId] = _FakeFile('$noteId.json', utf8.encode(content), _stamp());
-    return RemoteFile(fileId, '$noteId.json', files[fileId]!.modified);
-  }
-
-  @override
-  Future<void> deleteFile(String fileId) async => files.remove(fileId);
-
-  @override
-  Future<String?> modifiedTime(String fileId) async => files[fileId]?.modified;
-
-  @override
-  Future<RemoteFile> createBinary(String name, List<int> bytes) async {
-    final id = _newId();
-    files[id] = _FakeFile(name, bytes, _stamp());
-    return RemoteFile(id, name, files[id]!.modified);
-  }
-
-  @override
-  Future<void> updateBinary(String fileId, List<int> bytes) async {
-    files[fileId] = _FakeFile(files[fileId]!.name, bytes, _stamp());
-  }
-
-  @override
-  Future<List<int>> downloadBytes(String fileId) async => files[fileId]!.bytes;
-
-  int get attachmentCount =>
-      files.values.where((f) => f.name.startsWith('attach-')).length;
-}
-
-class _FakeFile {
-  String name;
-  List<int> bytes;
-  String modified;
-  _FakeFile(this.name, this.bytes, this.modified);
-}
+import 'fake_drive.dart';
 
 void main() {
   late SettingsService settings;
@@ -89,7 +28,7 @@ void main() {
     AttachmentStore store,
     SyncEngine engine,
     EncryptionService crypto
-  }) device(_FakeDrive drive) {
+  }) device(FakeDrive drive) {
     final dir = Directory.systemTemp.createTempSync('papernote_sync');
     addTearDown(() => dir.existsSync() ? dir.deleteSync(recursive: true) : null);
     final crypto = EncryptionService();
@@ -105,7 +44,7 @@ void main() {
   }
 
   test('an attachment created on one device syncs to another', () async {
-    final drive = _FakeDrive();
+    final drive = FakeDrive();
     final a = device(drive);
     final b = device(drive);
 
@@ -142,7 +81,7 @@ void main() {
 
   test('a no-longer-referenced attachment binary is garbage-collected',
       () async {
-    final drive = _FakeDrive();
+    final drive = FakeDrive();
     final a = device(drive);
 
     final src = File('${a.store.dirFor('_tmp').parent.path}/src.txt')
@@ -177,7 +116,7 @@ void main() {
   });
 
   test('notes and attachments sync end-to-end encrypted', () async {
-    final drive = _FakeDrive();
+    final drive = FakeDrive();
     final key = EncryptionService.generateMasterKey();
     final a = device(drive);
     a.crypto.unlock(key);
@@ -227,7 +166,7 @@ void main() {
 
   test('reencryptAttachments encrypts an already-synced binary in place',
       () async {
-    final drive = _FakeDrive();
+    final drive = FakeDrive();
     final a = device(drive);
 
     // Sync a note + attachment while encryption is OFF → plaintext binary.

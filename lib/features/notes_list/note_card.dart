@@ -14,10 +14,16 @@ class NoteCard extends StatelessWidget {
     required this.onTap,
     this.maxPreviewLines = 8,
     this.uniform = false,
+    this.folderName,
   });
 
   final Note note;
   final VoidCallback onTap;
+
+  /// Name of the note's owning folder, shown in the footer. Null both when the
+  /// note is unfiled and when the folder is already implied by the view (the
+  /// caller decides — see [NotesView]), so the card stays provider-free.
+  final String? folderName;
 
   /// How many lines of the body/checklist preview to show (user setting, 1..8).
   final int maxPreviewLines;
@@ -160,11 +166,40 @@ class NoteCard extends StatelessWidget {
     );
   }
 
+  /// One line: an optional folder tag, then the edited timestamp. Stays a
+  /// single line in both layouts, so the uniform row height is unaffected.
   Widget _footer(ThemeData theme, Color onBg) {
-    return Text(
+    final mutedSmall = theme.textTheme.labelSmall
+        ?.copyWith(color: onBg.withValues(alpha: 0.55));
+    final edited = Text(
       'Edited ${relativeTime(note.updatedAt)}',
-      style: theme.textTheme.labelSmall
-          ?.copyWith(color: onBg.withValues(alpha: 0.55)),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: mutedSmall,
+    );
+    final folder = folderName;
+    if (folder == null || folder.trim().isEmpty) return edited;
+
+    return Row(
+      children: [
+        Icon(Icons.folder_outlined, size: 12, color: onBg.withValues(alpha: 0.7)),
+        const SizedBox(width: 4),
+        // Flexible + ellipsis so a long folder name yields to the timestamp
+        // rather than overflowing a narrow grid column.
+        Flexible(
+          child: Text(
+            folder.trim(),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall?.copyWith(
+                color: onBg.withValues(alpha: 0.7),
+                fontWeight: FontWeight.w600),
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text('· ', style: mutedSmall),
+        Flexible(child: edited),
+      ],
     );
   }
 

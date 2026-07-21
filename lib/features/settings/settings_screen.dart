@@ -85,6 +85,35 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
+  /// Escape hatch: forget local sync bookkeeping and reconcile with Drive from
+  /// scratch. Nothing is deleted — every local note is re-matched against its
+  /// remote file — so the confirmation is informational rather than a warning.
+  Future<void> _resyncAll() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Re-sync everything?'),
+        content: const Text(
+            'PaperNote will compare every note and folder against Google Drive '
+            'again. Nothing is deleted, but a large library may take a moment.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Re-sync'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await ref.read(syncControllerProvider.notifier).resyncEverything();
+    final status = ref.read(syncControllerProvider);
+    _snack(status.message ?? 'Re-sync finished');
+  }
+
   void _snack(String message) {
     if (!mounted) return;
     showAppSnackBar(context, message);
@@ -581,6 +610,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       onChanged: (v) =>
                           v == null ? null : ctrl.setAutoSyncMinutes(v),
                     ),
+                  ),
+                if (settings.signedIn)
+                  ListTile(
+                    title: const Text('Re-sync everything'),
+                    subtitle: const Text(
+                        'Full two-way reconcile with Drive — use if a device '
+                        'looks out of date'),
+                    trailing: const Icon(Icons.sync_problem_outlined),
+                    onTap: sync.phase == SyncPhase.running ? null : _resyncAll,
                   ),
               ],
             ),

@@ -31,14 +31,27 @@ const _attachGcSafetyWindow = Duration(hours: 1);
 class SyncResult {
   final int pulled;
   final int pushed;
-  final int purged;
-  const SyncResult(this.pulled, this.pushed, this.purged);
+
+  /// Rows dropped locally this cycle: expired tombstones purged, plus rows
+  /// whose Drive file another device already purged (see [_reconcileMissing]).
+  final int removed;
+
+  const SyncResult(this.pulled, this.pushed, this.removed);
+
+  bool get isEmpty => pulled == 0 && pushed == 0 && removed == 0;
 }
 
 /// Two-way Google Drive sync over the hidden appDataFolder. Resolution is
 /// last-write-wins by each note's own `updatedAt` (not Drive's modifiedTime),
-/// so an edit made on any device wins consistently. Deletions travel as
-/// tombstones and the underlying files are purged after a retention window.
+/// so an edit made on any device wins consistently — *except* for deletions,
+/// which are terminal and always win over a live copy (see [_remoteWins]).
+/// Deletions travel as tombstones and the underlying files are purged after a
+/// retention window; a device that meets an already-purged file drops its local
+/// row via [_reconcileMissing].
+///
+/// Every pull decision also advances the row's `remoteModifiedTime`, so a pair
+/// of diverged devices converges in a single cycle instead of re-downloading
+/// the same file forever.
 ///
 /// The engine is stateless between runs except for the per-row sync metadata
 /// (`driveFileId`, `remoteModifiedTime`, `dirty`) persisted in the database.
@@ -102,9 +115,13 @@ class SyncEngine {
       // Folders pull first so notes referencing them resolve to a known folder.
       final pulled = await _pullFolders(remoteFolders, localFolderById) +
           await _pull(remoteNotes, localById);
+      // Runs after the pull (so rows the pull just refreshed are clean and
+      // present) but before the push, so a row whose file another device purged
+      // is dropped rather than re-uploaded.
+      final reconciled = await _reconcileMissing(remoteNotes, remoteFolders);
       final pushed =
           await _pushFolders(remoteFolderById) + await _push(remoteById);
-      final purged = await _purgeFolders() + await _purge();
+      final purged = await _purgeFolders() + await _purge() + reconciled;
       // Reclaim attachment binaries no longer referenced by any note.
       await _gcAttachments(remoteAttachments);
 
@@ -124,6 +141,13 @@ class SyncEngine {
   Future<bool> _canQuickPush(
       List<NoteRow> notes, List<FolderRow> folders) async {
     if (notes.length + folders.length > 5) return false;
+    // A deletion always takes the full pull-first cycle. The quick path uploads
+    // without pulling, so pushing a tombstone here could race another device's
+    // concurrent edit — and pushing a *live* row here could overwrite a
+    // tombstone this device hasn't seen yet, resurrecting a deleted note.
+    if (notes.any((r) => r.deleted) || folders.any((r) => r.deleted)) {
+      return false;
+    }
     for (final row in notes) {
       if (row.driveFileId == null || row.remoteModifiedTime == null) {
         return false;
@@ -145,7 +169,33 @@ class SyncEngine {
     return true;
   }
 
-  /// Download remote files that are new or newer than the local copy.
+  /// Which side of a conflict wins.
+  ///
+  /// A permanent delete is a *terminal* state and beats a live copy regardless
+  /// of timestamps. Wall-clock values minted on different devices aren't
+  /// comparable — a phone whose clock trails the desktop by even a second would
+  /// otherwise lose its tombstone and see the note resurrected — and a note that
+  /// refuses to die is a worse failure than a lost edit. Only when both sides
+  /// agree on liveness does last-write-wins apply.
+  ///
+  /// Exact timestamp ties need a rule too, or two devices holding different
+  /// content at the same `updatedAt` would each decide it was the winner and
+  /// overwrite the other on alternate syncs, forever. A pending local edit
+  /// ([localDirty]) wins — unpushed work is never discarded — and otherwise the
+  /// remote wins, so a clean device adopts the shared copy and both settle.
+  static bool _remoteWins({
+    required bool remoteDeleted,
+    required int remoteUpdatedAt,
+    required bool localDeleted,
+    required int localUpdatedAt,
+    required bool localDirty,
+  }) {
+    if (remoteDeleted != localDeleted) return remoteDeleted;
+    if (remoteUpdatedAt != localUpdatedAt) return remoteUpdatedAt > localUpdatedAt;
+    return !localDirty;
+  }
+
+  /// Download remote files that are new, newer, or tombstoned.
   Future<int> _pull(List<RemoteFile> remote, Map<String, NoteRow> localById) async {
     var pulled = 0;
     for (final file in remote) {
@@ -161,7 +211,14 @@ class SyncEngine {
       final remoteNote =
           Note.fromJson(_crypto.unwrapPayload(await _client.download(file.id)));
 
-      if (local == null || remoteNote.updatedAt > local.updatedAt) {
+      if (local == null ||
+          _remoteWins(
+            remoteDeleted: remoteNote.deleted,
+            remoteUpdatedAt: remoteNote.updatedAt,
+            localDeleted: local.deleted,
+            localUpdatedAt: local.updatedAt,
+            localDirty: local.dirty,
+          )) {
         await _db.applyRemote(
           remoteNote,
           driveFileId: file.id,
@@ -169,17 +226,72 @@ class SyncEngine {
         );
         await _downloadAttachments(remoteNote);
         pulled++;
-      } else if (local.driveFileId == null) {
-        // Local is newer (will be pushed) but we now know its file id.
+      } else {
+        // Local wins. Record this file's modifiedTime so we stop re-downloading
+        // it every cycle, and force `dirty` so `_push` (which re-reads dirty
+        // rows after the pull) overwrites the remote with our copy. The two must
+        // happen together: advancing remoteModifiedTime without pushing would
+        // silently swallow the remote change. This pair is what makes a diverged
+        // device converge in one cycle instead of thrashing forever.
         await _db.setSyncMeta(
           local.id,
           driveFileId: file.id,
-          remoteModifiedTime: local.remoteModifiedTime,
-          dirty: local.dirty,
+          remoteModifiedTime: file.modifiedTime,
+          dirty: true,
         );
       }
     }
     return pulled;
+  }
+
+  /// Drop local rows whose Drive file is gone — another device's [_purge]
+  /// removed it after the retention window, so this row is a leftover that
+  /// would otherwise survive as a zombie (and be re-uploaded on its next edit).
+  ///
+  /// Deliberately conservative, because the failure mode is data loss:
+  ///
+  /// * only clean rows that we know were synced (`driveFileId != null`,
+  ///   `dirty == false`) — unsynced or locally-edited work is never touched;
+  /// * skipped entirely when the listing is empty, so a failed or truncated
+  ///   listing can't read as "everything was purged";
+  /// * skipped entirely when *none* of our synced file ids appear in the
+  ///   listing, which means we're looking at a different Drive account rather
+  ///   than at our own purges.
+  Future<int> _reconcileMissing(
+      List<RemoteFile> remoteNotes, List<RemoteFile> remoteFolders) async {
+    if (remoteNotes.isEmpty && remoteFolders.isEmpty) return 0;
+    final remoteIds = {
+      for (final f in remoteNotes) f.id,
+      for (final f in remoteFolders) f.id,
+    };
+
+    final noteRows = (await _db.allRawRows())
+        .where((r) => r.driveFileId != null && !r.dirty)
+        .toList();
+    final folderRows = (await _db.allRawFolderRows())
+        .where((r) => r.driveFileId != null && !r.dirty)
+        .toList();
+    if (noteRows.isEmpty && folderRows.isEmpty) return 0;
+
+    // Do we recognize this account at all? If not a single one of our synced
+    // files is present, this is not a purge — bail out rather than wipe.
+    final recognized = noteRows.any((r) => remoteIds.contains(r.driveFileId)) ||
+        folderRows.any((r) => remoteIds.contains(r.driveFileId));
+    if (!recognized) return 0;
+
+    var removed = 0;
+    for (final row in noteRows) {
+      if (remoteIds.contains(row.driveFileId)) continue;
+      await _store.removeAllFor(row.id);
+      await _db.hardDelete(row.id);
+      removed++;
+    }
+    for (final row in folderRows) {
+      if (remoteIds.contains(row.driveFileId)) continue;
+      await _db.hardDeleteFolder(row.id);
+      removed++;
+    }
+    return removed;
   }
 
   /// Upload every locally-dirty note (creates or overwrites its Drive file).
@@ -341,19 +453,27 @@ class SyncEngine {
       final remoteFolder = Folder.fromJson(
           _crypto.unwrapPayload(await _client.download(file.id)));
 
-      if (local == null || remoteFolder.updatedAt > local.updatedAt) {
+      if (local == null ||
+          _remoteWins(
+            remoteDeleted: remoteFolder.deleted,
+            remoteUpdatedAt: remoteFolder.updatedAt,
+            localDeleted: local.deleted,
+            localUpdatedAt: local.updatedAt,
+            localDirty: local.dirty,
+          )) {
         await _db.applyRemoteFolder(
           remoteFolder,
           driveFileId: file.id,
           remoteModifiedTime: file.modifiedTime,
         );
         pulled++;
-      } else if (local.driveFileId == null) {
+      } else {
+        // Local wins — converge rather than re-download forever. See `_pull`.
         await _db.setFolderSyncMeta(
           local.id,
           driveFileId: file.id,
-          remoteModifiedTime: local.remoteModifiedTime,
-          dirty: local.dirty,
+          remoteModifiedTime: file.modifiedTime,
+          dirty: true,
         );
       }
     }

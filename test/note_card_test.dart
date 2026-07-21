@@ -12,12 +12,19 @@ Note _note(String id, String body) => Note(
       updatedAt: 1000,
     );
 
-Widget _harness(Note note) => MaterialApp(
+Widget _harness(Note note,
+        {String? folderName, bool uniform = true, double width = 300}) =>
+    MaterialApp(
       home: Scaffold(
         body: Center(
           child: SizedBox(
-            width: 300,
-            child: NoteCard(note: note, onTap: () {}, uniform: true),
+            width: width,
+            child: NoteCard(
+              note: note,
+              onTap: () {},
+              uniform: uniform,
+              folderName: folderName,
+            ),
           ),
         ),
       ),
@@ -46,5 +53,60 @@ void main() {
     expect(longSize.height, shortSize.height);
     expect(longSize.width, shortSize.width);
     expect(shortSize.width, 300);
+  });
+
+  testWidgets('the folder tag shows only when a folder name is given',
+      (tester) async {
+    await tester.pumpWidget(_harness(_note('a', shortBody)));
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.folder_outlined), findsNothing);
+    expect(find.textContaining('Edited'), findsOneWidget);
+
+    await tester.pumpWidget(
+        _harness(_note('a', shortBody), folderName: 'Shopping'));
+    await tester.pumpAndSettle();
+    expect(find.text('Shopping'), findsOneWidget);
+    expect(find.byIcon(Icons.folder_outlined), findsOneWidget);
+    expect(find.textContaining('Edited'), findsOneWidget,
+        reason: 'the tag sits alongside the timestamp, not instead of it');
+  });
+
+  testWidgets('the folder tag never changes the uniform row height',
+      (tester) async {
+    await tester.pumpWidget(_harness(_note('a', longBody)));
+    await tester.pumpAndSettle();
+    final plain = tester.getSize(find.byType(NoteCard));
+
+    await tester
+        .pumpWidget(_harness(_note('a', longBody), folderName: 'Shopping'));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(NoteCard)).height, plain.height);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a long folder name ellipsizes instead of overflowing',
+      (tester) async {
+    // Narrow column + huge text scale + a long name: the worst case for the
+    // footer row, which must degrade to an ellipsis rather than throw.
+    await tester.pumpWidget(MaterialApp(
+      home: MediaQuery(
+        data: const MediaQueryData(textScaler: TextScaler.linear(2.0)),
+        child: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 130,
+              child: NoteCard(
+                note: _note('a', shortBody),
+                onTap: () {},
+                folderName: 'An Extremely Long Folder Name That Will Not Fit',
+              ),
+            ),
+          ),
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull,
+        reason: 'the footer must not overflow');
   });
 }

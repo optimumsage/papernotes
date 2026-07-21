@@ -272,14 +272,39 @@ class AppDatabase extends _$AppDatabase {
     );
   }
 
-  /// Tombstones whose retention window has elapsed — safe to purge.
+  /// Tombstones whose retention window has elapsed — safe to purge. A NULL
+  /// `deletedAt` counts as expired: a comparison against NULL is false in SQL,
+  /// so such a row (possible from an older or hand-edited remote payload) would
+  /// otherwise never be collected.
   Future<List<Note>> expiredTombstones(int cutoffEpochMs) async {
     final rows = await (select(notes)
           ..where((t) =>
               t.deleted.equals(true) &
-              t.deletedAt.isSmallerThanValue(cutoffEpochMs)))
+              (t.deletedAt.isSmallerThanValue(cutoffEpochMs) |
+                  t.deletedAt.isNull())))
         .get();
     return rows.map(_toModel).toList();
+  }
+
+  /// Forget every row's sync bookkeeping and mark it dirty, so the next full
+  /// sync re-reconciles against Drive from scratch. Backs the "Re-sync
+  /// everything" escape hatch in Settings.
+  ///
+  /// Not a "local wins" hammer: the pull runs first and `applyRemote` clears
+  /// `dirty` on any row the remote wins. Nor does it duplicate remote files —
+  /// the push falls back to matching by note id when `driveFileId` is null, so
+  /// existing files are updated in place.
+  Future<void> clearSyncMeta() async {
+    await update(notes).write(const NotesCompanion(
+      driveFileId: Value(null),
+      remoteModifiedTime: Value(null),
+      dirty: Value(true),
+    ));
+    await update(folders).write(const FoldersCompanion(
+      driveFileId: Value(null),
+      remoteModifiedTime: Value(null),
+      dirty: Value(true),
+    ));
   }
 
   // ---- Folders ----
@@ -376,11 +401,14 @@ class AppDatabase extends _$AppDatabase {
     );
   }
 
+  /// Folder tombstones past retention. NULL `deletedAt` counts as expired for
+  /// the same reason as [expiredTombstones].
   Future<List<Folder>> expiredFolderTombstones(int cutoffEpochMs) async {
     final rows = await (select(folders)
           ..where((t) =>
               t.deleted.equals(true) &
-              t.deletedAt.isSmallerThanValue(cutoffEpochMs)))
+              (t.deletedAt.isSmallerThanValue(cutoffEpochMs) |
+                  t.deletedAt.isNull())))
         .get();
     return rows.map(_toFolderModel).toList();
   }

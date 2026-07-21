@@ -167,6 +167,13 @@ class SelectedFolder extends Notifier<String?> {
   void set(String? id) => state = id;
 }
 
+/// Folder id → name, for labelling notes with their owning folder without
+/// giving every card its own provider lookup.
+final folderNamesProvider = Provider<Map<String, String>>((ref) {
+  final folders = ref.watch(foldersProvider).value ?? const [];
+  return {for (final f in folders) f.id: f.name};
+});
+
 /// The currently-selected folder resolved to a [Folder], or null when no
 /// folder filter is active (or the folder was removed).
 final selectedFolderObjectProvider = Provider<Folder?>((ref) {
@@ -439,15 +446,32 @@ class SyncController extends Notifier<SyncStatus> {
       }
       final result = await ref.read(syncEngineProvider).sync(quick: quick);
       ref.read(settingsControllerProvider.notifier).markSyncedNow();
-      state = SyncStatus(
-        SyncPhase.success,
-        '↓${result.pulled} ↑${result.pushed}',
-      );
+      state = SyncStatus(SyncPhase.success, _summarize(result));
     } on DriveAuthException catch (e) {
       state = SyncStatus(SyncPhase.error, e.message);
     } catch (e) {
       state = SyncStatus(SyncPhase.error, 'Sync failed: $e');
     }
+  }
+
+  /// Human-readable summary of a finished cycle, e.g. "Synced · 2 updated ·
+  /// 1 removed". Replaces the old "↓0 ↑0", which gave no clue whether a sync
+  /// had actually done anything.
+  static String _summarize(SyncResult r) {
+    if (r.isEmpty) return 'Up to date';
+    final parts = [
+      if (r.pulled > 0) '${r.pulled} updated',
+      if (r.pushed > 0) '${r.pushed} uploaded',
+      if (r.removed > 0) '${r.removed} removed',
+    ];
+    return 'Synced · ${parts.join(' · ')}';
+  }
+
+  /// Forget all local sync bookkeeping and run a full two-way reconcile against
+  /// Drive. The escape hatch for a device that has somehow diverged.
+  Future<void> resyncEverything() async {
+    await ref.read(databaseProvider).clearSyncMeta();
+    await syncNow();
   }
 }
 

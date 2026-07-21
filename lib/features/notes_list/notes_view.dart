@@ -45,9 +45,26 @@ class NotesView extends ConsumerWidget {
       defaultTargetPlatform == TargetPlatform.macOS ||
       defaultTargetPlatform == TargetPlatform.windows;
 
+  /// The folder label to show on [note]'s card, or null for none.
+  ///
+  /// Suppressed when the Notes screen is already filtered to that folder — the
+  /// app bar names it there, so a chip on every card would just be noise. The
+  /// mode check matters: Archive and Trash are never folder-filtered, but
+  /// `selectedFolderProvider` may still hold an id from the Notes screen, so
+  /// suppressing on the id alone would wrongly hide the tag in those views.
+  String? _folderLabel(
+      Note note, Map<String, String> names, String? selectedFolderId) {
+    final folderId = note.folderId;
+    if (folderId == null) return null;
+    if (mode == NotesViewMode.active && selectedFolderId == folderId) {
+      return null;
+    }
+    return names[folderId];
+  }
+
   Widget _wrap(BuildContext context, WidgetRef ref, Note note, int previewLines,
       SwipeAction leftSwipe, SwipeAction rightSwipe,
-      {required bool uniform}) {
+      {required bool uniform, required String? folderName}) {
     // InkWell inside NoteCard claims normal taps; secondary-tap and long-press
     // fall through to this GestureDetector and open the context menu at the
     // pointer position.
@@ -65,6 +82,7 @@ class NotesView extends ConsumerWidget {
             onTap: () => _onCardTap(context, ref, note),
             maxPreviewLines: previewLines,
             uniform: uniform,
+            folderName: folderName,
           ),
         ),
       ),
@@ -170,6 +188,8 @@ class NotesView extends ConsumerWidget {
         ref.watch(settingsControllerProvider.select((s) => s.leftSwipeAction));
     final rightSwipe =
         ref.watch(settingsControllerProvider.select((s) => s.rightSwipeAction));
+    final folderNames = ref.watch(folderNamesProvider);
+    final selectedFolderId = ref.watch(selectedFolderProvider);
 
     if (viewStyle == ViewStyle.list) {
       return ListView.separated(
@@ -178,7 +198,9 @@ class NotesView extends ConsumerWidget {
         separatorBuilder: (_, _) => const SizedBox(height: 10),
         itemBuilder: (context, i) => _wrap(
             context, ref, notes[i], previewLines, leftSwipe, rightSwipe,
-            uniform: true),
+            uniform: true,
+            folderName:
+                _folderLabel(notes[i], folderNames, selectedFolderId)),
       );
     }
 
@@ -192,7 +214,8 @@ class NotesView extends ConsumerWidget {
       itemCount: notes.length,
       itemBuilder: (context, i) => _wrap(
           context, ref, notes[i], previewLines, leftSwipe, rightSwipe,
-          uniform: false),
+          uniform: false,
+          folderName: _folderLabel(notes[i], folderNames, selectedFolderId)),
     );
   }
 }

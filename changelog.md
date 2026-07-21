@@ -3,6 +3,51 @@
 All notable changes to PaperNote are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-07-21
+
+### Fixed
+- **Deleting a note on one device now really deletes it everywhere.** Deletions
+  were resolved like any other edit — last-write-wins on a timestamp taken from
+  whichever device made the change. Because two devices' clocks are never
+  exactly in step, a delete made on your phone could carry an *older* timestamp
+  than your desktop's copy, lose the comparison, and be discarded; the desktop
+  then re-uploaded the live note, resurrecting it on the phone too. A permanent
+  delete is now **terminal** and always wins over a live copy, whatever the
+  clocks say.
+- **Sync no longer gets permanently stuck.** When a device decided its own copy
+  was newer, it never recorded that it had seen the remote file and never
+  pushed its copy either — so it re-downloaded and re-discarded the same file on
+  *every* sync, forever, and pressing "Sync now" could never fix it. Both sides
+  now converge in a single cycle.
+- **No more resurrected notes.** A note whose Drive file was already cleaned up
+  by another device is now removed locally instead of lingering and being
+  re-uploaded on its next edit. The sweep is deliberately conservative: it never
+  touches unsynced or locally-edited notes, and it stands down entirely on an
+  empty or unrecognized Drive listing, so signing into a different account can't
+  wipe a device.
+- **Deletes are never sent by the fast after-edit sync**, which uploads without
+  reading Drive first and could otherwise overwrite a deletion it hadn't seen.
+- Tombstones with a missing deletion date are now cleaned up rather than kept
+  forever (a SQL comparison against NULL is never true, so they were skipped).
+
+### Added
+- **Folder tags on note cards.** A note filed in a folder now shows that folder's
+  name in its card footer, so you can tell where a note lives from Archive,
+  Trash, and search results. It's hidden while you're already viewing that
+  folder, since the title bar names it there.
+- **Re-sync everything** (Settings → Sync). Forgets this device's sync
+  bookkeeping and does a full two-way reconcile with Drive. Nothing is deleted —
+  it's an escape hatch if a device ever looks out of date.
+- Sync now reports what it actually did — "Up to date", or e.g. "Synced · 2
+  updated · 1 removed" — instead of the old "↓0 ↑0".
+
+### Notes
+- Delete propagation had **no test coverage**, which is how this shipped: the
+  existing tests applied remote changes directly and never exercised the
+  conflict resolution. There is now a suite that runs two real sync engines
+  against one shared Drive, covering clock skew, resurrection, convergence, and
+  the safety guards. Five of its cases fail against the previous engine.
+
 ## [0.11.0] - 2026-07-13
 
 ### Added
