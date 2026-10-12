@@ -1,17 +1,59 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 
 import 'drive_auth.dart';
+
+/// Wraps an http.Client so no request can hang forever.
+///
+/// Without this a single stalled Drive call — typically a socket left
+/// half-open by sleep or a network/VPN change — never completes, so the sync
+/// cycle awaiting it never finishes and every later sync is skipped as
+/// "already running" until the app restarts. [headerTimeout] bounds the wait
+/// for the response (which includes uploading the request body);
+/// [idleTimeout] bounds the gap between body chunks while downloading.
+class TimeoutClient extends http.BaseClient {
+  TimeoutClient(
+    this._inner, {
+    this.headerTimeout = const Duration(minutes: 2),
+    this.idleTimeout = const Duration(seconds: 60),
+  });
+
+  final http.Client _inner;
+  final Duration headerTimeout;
+  final Duration idleTimeout;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final res = await _inner.send(request).timeout(headerTimeout);
+    return http.StreamedResponse(
+      res.stream.timeout(idleTimeout),
+      res.statusCode,
+      contentLength: res.contentLength,
+      request: res.request,
+      headers: res.headers,
+      isRedirect: res.isRedirect,
+      persistentConnection: res.persistentConnection,
+      reasonPhrase: res.reasonPhrase,
+    );
+  }
+
+  @override
+  void close() => _inner.close();
+}
 
 /// An http.Client that injects a fresh Bearer token on every request. The
 /// token is fetched (and refreshed if needed) by [DriveAuth] per call.
 class _AuthClient extends http.BaseClient {
   _AuthClient(this._auth);
   final DriveAuth _auth;
-  final http.Client _inner = http.Client();
+  final http.Client _inner = TimeoutClient(IOClient(HttpClient()
+    ..connectionTimeout = const Duration(seconds: 20)
+    ..idleTimeout = const Duration(seconds: 15)));
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {

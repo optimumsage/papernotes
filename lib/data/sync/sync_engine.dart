@@ -64,72 +64,107 @@ class SyncEngine {
   final AttachmentStore _store;
   final EncryptionService _crypto;
 
-  bool _running = false;
+  /// The cycle currently running, if any. Concurrent callers join it rather
+  /// than getting a fake empty result (which the UI showed as "Up to date"
+  /// while nothing was actually syncing).
+  Future<SyncResult>? _inFlight;
+  bool _inFlightQuick = false;
+  DateTime _inFlightSince = DateTime.fromMillisecondsSinceEpoch(0);
+  int _generation = 0;
+
+  /// A run older than this is presumed wedged and no longer blocks new runs.
+  /// Every Drive request is individually time-bounded (see `TimeoutClient`),
+  /// so this is only a last-resort safety net.
+  static const _staleRunAfter = Duration(minutes: 10);
 
   int get _now => DateTime.now().millisecondsSinceEpoch;
 
-  /// Runs a full pull → push → purge cycle. Reentrant calls are ignored.
+  /// Runs a full pull → push → purge cycle. A call made while another cycle
+  /// is running waits for that cycle instead of starting a second one; if it
+  /// asked for a full sync but the running one is quick, a full cycle follows.
   ///
   /// [quick] is the debounced after-edit path: when it is provably safe (see
   /// [_canQuickPush]) it just uploads the dirty rows and skips the full folder
   /// listing + pull + purge, which the launch / interval / manual syncs cover.
   Future<SyncResult> sync({bool quick = false}) async {
-    if (_running) return const SyncResult(0, 0, 0);
-    _running = true;
-    try {
-      if (quick) {
-        final dirtyNotes = await _db.dirtyRawNoteRows();
-        final dirtyFolders = await _db.dirtyRawFolderRows();
-        if (await _canQuickPush(dirtyNotes, dirtyFolders)) {
-          final pushed = await _pushFolders(const {}, rows: dirtyFolders) +
-              await _push(const {}, rows: dirtyNotes);
-          await _settings.setLastSyncedAt(_now);
-          return SyncResult(0, pushed, 0);
-        }
+    final running = _inFlight;
+    if (running != null &&
+        DateTime.now().difference(_inFlightSince) < _staleRunAfter) {
+      final wasQuick = _inFlightQuick;
+      SyncResult? joined;
+      try {
+        joined = await running;
+      } catch (_) {
+        // The other caller already reports its failure; run our own cycle.
       }
-
-      final remote = await _client.list();
-      // Partition the remote listing: folder payloads, note payloads, and
-      // attachment binaries (handled separately, via note `driveFileId`s).
-      final remoteNotes = remote
-          .where((f) =>
-              !f.noteId.startsWith(_folderPrefix) &&
-              !f.noteId.startsWith(_attachPrefix) &&
-              !f.noteId.startsWith(_encryptionPrefix))
-          .toList();
-      final remoteFolders =
-          remote.where((f) => f.noteId.startsWith(_folderPrefix)).toList();
-      final remoteAttachments =
-          remote.where((f) => f.noteId.startsWith(_attachPrefix)).toList();
-
-      final remoteById = {for (final f in remoteNotes) f.noteId: f};
-      final localById = {for (final r in await _db.allRawRows()) r.id: r};
-      // Folder maps are keyed by the bare folder id (prefix stripped).
-      final remoteFolderById = {
-        for (final f in remoteFolders) _folderId(f.noteId): f
-      };
-      final localFolderById = {
-        for (final r in await _db.allRawFolderRows()) r.id: r
-      };
-
-      // Folders pull first so notes referencing them resolve to a known folder.
-      final pulled = await _pullFolders(remoteFolders, localFolderById) +
-          await _pull(remoteNotes, localById);
-      // Runs after the pull (so rows the pull just refreshed are clean and
-      // present) but before the push, so a row whose file another device purged
-      // is dropped rather than re-uploaded.
-      final reconciled = await _reconcileMissing(remoteNotes, remoteFolders);
-      final pushed =
-          await _pushFolders(remoteFolderById) + await _push(remoteById);
-      final purged = await _purgeFolders() + await _purge() + reconciled;
-      // Reclaim attachment binaries no longer referenced by any note.
-      await _gcAttachments(remoteAttachments);
-
-      await _settings.setLastSyncedAt(_now);
-      return SyncResult(pulled, pushed, purged);
-    } finally {
-      _running = false;
+      if (joined != null && (quick || !wasQuick)) return joined;
+      return sync(quick: quick);
     }
+
+    final generation = ++_generation;
+    final run = _run(quick: quick);
+    _inFlight = run;
+    _inFlightQuick = quick;
+    _inFlightSince = DateTime.now();
+    try {
+      return await run;
+    } finally {
+      // A stale run finishing late must not clear a newer run's slot.
+      if (_generation == generation) _inFlight = null;
+    }
+  }
+
+  Future<SyncResult> _run({required bool quick}) async {
+    if (quick) {
+      final dirtyNotes = await _db.dirtyRawNoteRows();
+      final dirtyFolders = await _db.dirtyRawFolderRows();
+      if (await _canQuickPush(dirtyNotes, dirtyFolders)) {
+        final pushed = await _pushFolders(const {}, rows: dirtyFolders) +
+            await _push(const {}, rows: dirtyNotes);
+        await _settings.setLastSyncedAt(_now);
+        return SyncResult(0, pushed, 0);
+      }
+    }
+
+    final remote = await _client.list();
+    // Partition the remote listing: folder payloads, note payloads, and
+    // attachment binaries (handled separately, via note `driveFileId`s).
+    final remoteNotes = remote
+        .where((f) =>
+            !f.noteId.startsWith(_folderPrefix) &&
+            !f.noteId.startsWith(_attachPrefix) &&
+            !f.noteId.startsWith(_encryptionPrefix))
+        .toList();
+    final remoteFolders =
+        remote.where((f) => f.noteId.startsWith(_folderPrefix)).toList();
+    final remoteAttachments =
+        remote.where((f) => f.noteId.startsWith(_attachPrefix)).toList();
+
+    final remoteById = {for (final f in remoteNotes) f.noteId: f};
+    final localById = {for (final r in await _db.allRawRows()) r.id: r};
+    // Folder maps are keyed by the bare folder id (prefix stripped).
+    final remoteFolderById = {
+      for (final f in remoteFolders) _folderId(f.noteId): f
+    };
+    final localFolderById = {
+      for (final r in await _db.allRawFolderRows()) r.id: r
+    };
+
+    // Folders pull first so notes referencing them resolve to a known folder.
+    final pulled = await _pullFolders(remoteFolders, localFolderById) +
+        await _pull(remoteNotes, localById);
+    // Runs after the pull (so rows the pull just refreshed are clean and
+    // present) but before the push, so a row whose file another device purged
+    // is dropped rather than re-uploaded.
+    final reconciled = await _reconcileMissing(remoteNotes, remoteFolders);
+    final pushed =
+        await _pushFolders(remoteFolderById) + await _push(remoteById);
+    final purged = await _purgeFolders() + await _purge() + reconciled;
+    // Reclaim attachment binaries no longer referenced by any note.
+    await _gcAttachments(remoteAttachments);
+
+    await _settings.setLastSyncedAt(_now);
+    return SyncResult(pulled, pushed, purged);
   }
 
   /// True when pushing the dirty rows without a pull first cannot violate

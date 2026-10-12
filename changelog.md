@@ -3,6 +3,20 @@
 All notable changes to PaperNote are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.1] - 2026-10-12
+
+### Fixed
+- **The desktop app could silently stop syncing while claiming "Up to date".**
+  Drive requests had no timeout, so one that stalled (typically a connection
+  left half-open by sleep or a Wi-Fi/VPN change) never finished. That kept the
+  sync permanently marked as "running", and every later sync, manual or
+  automatic, was skipped and reported as "Up to date" until the app was
+  restarted. A long-running tray app could go weeks without really syncing.
+  Every Drive request now times out (connection, response and download
+  stalls), a sync started while another is running waits for it instead of
+  faking success, and a timed-out sync shows a clear error so the next attempt
+  retries.
+
 ## [0.12.0] - 2026-07-21
 
 ### Fixed

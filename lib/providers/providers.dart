@@ -449,6 +449,9 @@ class SyncController extends Notifier<SyncStatus> {
       state = SyncStatus(SyncPhase.success, _summarize(result));
     } on DriveAuthException catch (e) {
       state = SyncStatus(SyncPhase.error, e.message);
+    } on TimeoutException {
+      state = const SyncStatus(
+          SyncPhase.error, 'Sync timed out — check your connection and retry');
     } catch (e) {
       state = SyncStatus(SyncPhase.error, 'Sync failed: $e');
     }
